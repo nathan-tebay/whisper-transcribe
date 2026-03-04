@@ -1,6 +1,9 @@
 """Transcription via whisper.cpp subprocess."""
+import logging
 import os
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 class Transcriber:
@@ -28,8 +31,11 @@ class Transcriber:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
+            logger.error("whisper.cpp timed out after %ds", timeout)
             return None
         if result.returncode != 0:
+            logger.error("whisper.cpp failed (exit %d): %s",
+                         result.returncode, result.stderr.strip())
             return None
         text = result.stdout.strip()
         return text if text else None
