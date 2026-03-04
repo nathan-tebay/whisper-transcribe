@@ -73,12 +73,14 @@ step_system_deps() {
 
 # ── Step 3: Python dependencies ───────────────────────────────────────────────
 step_python_deps() {
+    # Running as root: pip3 installs to /usr/local/lib64/python3.x/site-packages/
+    # which is system-wide and accessible to all users including TARGET_USER.
     if python3 -c "import evdev" &>/dev/null; then
         skip "python3-evdev already importable."
         return
     fi
     info "Installing python3-evdev..."
-    pip install evdev
+    pip3 install evdev
     done_ "python3-evdev installed."
 }
 step_build_whisper()     { true; }
