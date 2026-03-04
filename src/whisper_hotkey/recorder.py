@@ -14,7 +14,10 @@ class AudioRecorder:
         self._start_time = None
 
     def start(self):
-        """Start recording. Non-blocking."""
+        """Start recording. Non-blocking. Raises RuntimeError if already recording."""
+        if self._process is not None:
+            raise RuntimeError("Recording already in progress")
+        # Assign process first; _start_time only set on successful Popen
         self._process = subprocess.Popen([
             "pw-record",
             "--rate", str(self.sample_rate),
