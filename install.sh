@@ -41,8 +41,22 @@ done
 
 [[ -z "$TARGET_USER" ]] && usage
 
+# ── Step 1: Validate ──────────────────────────────────────────────────────────
+step_validate() {
+    info "Validating environment..."
+
+    [[ $EUID -ne 0 ]] && error "Run as root: sudo $0 $TARGET_USER"
+
+    id "$TARGET_USER" &>/dev/null \
+        || error "User '$TARGET_USER' does not exist."
+
+    getent group input &>/dev/null \
+        || error "'input' group does not exist. Is this a Linux desktop system?"
+
+    done_ "Validation passed (user=$TARGET_USER)"
+}
+
 # ── Steps (stubs — filled in by later tasks) ─────────────────────────────────
-step_validate()          { true; }
 step_system_deps()       { true; }
 step_python_deps()       { true; }
 step_build_whisper()     { true; }
