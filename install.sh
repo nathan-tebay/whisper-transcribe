@@ -83,7 +83,35 @@ step_python_deps() {
     pip3 install evdev
     done_ "python3-evdev installed."
 }
-step_build_whisper()     { true; }
+# ── Step 4: Build whisper.cpp ─────────────────────────────────────────────────
+step_build_whisper() {
+    if [[ -x "$WHISPER_BIN" && $FORCE_REBUILD -eq 0 ]]; then
+        skip "whisper-main already at $WHISPER_BIN (use --force-rebuild to rebuild)."
+        return
+    fi
+
+    info "Cloning whisper.cpp into $BUILD_TMP ..."
+    rm -rf "$BUILD_TMP"
+    git clone --depth 1 https://github.com/ggerganov/whisper.cpp "$BUILD_TMP"
+
+    info "Building with Vulkan backend (this takes 5-10 minutes)..."
+    cmake -B "$BUILD_TMP/build" "$BUILD_TMP" \
+        -DGGML_VULKAN=ON \
+        -DCMAKE_BUILD_TYPE=Release
+    cmake --build "$BUILD_TMP/build" --config Release -j"$(nproc)"
+
+    local built_bin
+    # whisper.cpp may produce whisper-main or whisper-cli depending on version
+    built_bin=$(find "$BUILD_TMP/build/bin" -maxdepth 1 \
+        \( -name "whisper-main" -o -name "whisper-cli" \) \
+        -executable | head -1)
+
+    [[ -z "$built_bin" ]] \
+        && error "Build succeeded but no whisper binary found in $BUILD_TMP/build/bin/"
+
+    install -m 755 "$built_bin" "$WHISPER_BIN"
+    done_ "whisper-main installed to $WHISPER_BIN"
+}
 step_download_model()    { true; }
 step_install_entry_point() { true; }
 step_input_group()       { true; }
