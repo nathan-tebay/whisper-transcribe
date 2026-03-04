@@ -16,8 +16,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logger = logging.getLogger(__name__)
 
 # Configuration — edit these to taste
-MODEL_PATH   = os.path.expanduser("~/bin/models/ggml-large-v3.bin")
-WHISPER_BIN  = os.path.expanduser("~/bin/whisper-main")
+MODEL_PATH   = "/usr/local/share/whisper/models/ggml-large-v3.bin"
+WHISPER_BIN  = "/usr/local/bin/whisper-main"
 AUDIO_PATH   = "/tmp/whisper-in.wav"
 HOTKEY       = evdev.ecodes.KEY_SCROLLLOCK
 MIN_DURATION = 0.5   # seconds; shorter recordings discarded
