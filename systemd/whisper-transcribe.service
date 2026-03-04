@@ -1,0 +1,11 @@
+[Unit]
+Description=Whisper hotkey transcription daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/bin/whisper-transcribe
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
