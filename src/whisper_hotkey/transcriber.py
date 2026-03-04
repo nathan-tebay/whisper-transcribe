@@ -11,20 +11,24 @@ class Transcriber:
         self.model = os.path.expanduser(model)
         self.language = language
 
-    def transcribe(self, audio_path: str) -> str | None:
-        """Transcribe audio file. Returns text or None on failure."""
-        result = subprocess.run(
-            [
-                self.binary,
-                "-m", self.model,
-                "-f", audio_path,
-                "--no-timestamps",
-                "-np",          # no progress output
-                "-l", self.language,
-            ],
-            capture_output=True,
-            text=True,
-        )
+    def transcribe(self, audio_path: str, timeout: int = 60) -> str | None:
+        """Transcribe audio file. Returns text or None on failure/timeout."""
+        try:
+            result = subprocess.run(
+                [
+                    self.binary,
+                    "-m", self.model,
+                    "-f", audio_path,
+                    "--no-timestamps",
+                    "-np",          # no progress output
+                    "-l", self.language,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return None
         if result.returncode != 0:
             return None
         text = result.stdout.strip()
