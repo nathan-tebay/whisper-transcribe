@@ -11,6 +11,7 @@ def find_keyboard_device(keycode: int = ecodes.KEY_SCROLLLOCK):
             caps = dev.capabilities()
             if keycode in caps.get(ecodes.EV_KEY, []):
                 return dev
+            dev.close()  # close non-matching devices to avoid fd leaks
         except (PermissionError, OSError):
             continue
     return None
@@ -28,14 +29,18 @@ class KeyWatcher:
     def handle_event(self, event):
         if event.type != ecodes.EV_KEY or event.code != self.keycode:
             return
-        if event.value == 1:    # key down
+        if event.value == 1:    # key down (initial press only)
             self.on_press()
         elif event.value == 0:  # key up
             self.on_release()
+        # value == 2 is autorepeat — intentionally ignored for hold-to-talk
 
     def run(self):
         """Block and process events. Call from a thread."""
-        self.device.grab()
+        try:
+            self.device.grab()
+        except OSError as e:
+            raise OSError(f"Failed to grab device {self.device.path}: {e}") from e
         try:
             for event in self.device.read_loop():
                 self.handle_event(event)
