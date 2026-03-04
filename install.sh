@@ -56,9 +56,31 @@ step_validate() {
     done_ "Validation passed (user=$TARGET_USER)"
 }
 
-# ── Steps (stubs — filled in by later tasks) ─────────────────────────────────
-step_system_deps()       { true; }
-step_python_deps()       { true; }
+# ── Step 2: System dependencies ───────────────────────────────────────────────
+step_system_deps() {
+    info "Installing system dependencies via dnf..."
+    dnf install -y \
+        cmake \
+        gcc-c++ \
+        vulkan-devel \
+        shaderc \
+        ydotool \
+        libnotify \
+        pipewire-utils \
+        git
+    done_ "System dependencies installed."
+}
+
+# ── Step 3: Python dependencies ───────────────────────────────────────────────
+step_python_deps() {
+    if python3 -c "import evdev" &>/dev/null; then
+        skip "python3-evdev already importable."
+        return
+    fi
+    info "Installing python3-evdev..."
+    pip install evdev
+    done_ "python3-evdev installed."
+}
 step_build_whisper()     { true; }
 step_download_model()    { true; }
 step_install_entry_point() { true; }
