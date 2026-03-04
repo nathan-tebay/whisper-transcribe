@@ -61,7 +61,10 @@ def on_release():
 
 def _cleanup(signum, frame):
     logger.info("Shutting down (signal %d)", signum)
-    recorder.stop()
+    try:
+        recorder.stop()
+    except Exception as e:
+        logger.error("Error stopping recorder during cleanup: %s", e)
     sys.exit(0)
 
 
