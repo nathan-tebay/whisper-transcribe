@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import urllib.request
 from urllib.parse import urlparse, urlunparse
 
@@ -14,6 +15,7 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import GLib, Gtk
 
 from . import config as _config
+from .key_watcher import list_keyboard_devices as _list_keyboards
 
 SERVICE = "whisper-transcribe.service"
 
@@ -38,19 +40,6 @@ def _systemctl(*args) -> subprocess.CompletedProcess:
 def _is_running() -> bool:
     return _systemctl("is-active", SERVICE).stdout.strip() == "active"
 
-
-def _list_keyboards():
-    import evdev
-    keyboards = []
-    for path in evdev.list_devices():
-        try:
-            dev = evdev.InputDevice(path)
-            if evdev.ecodes.EV_KEY in dev.capabilities():
-                keyboards.append((path, dev.name))
-            dev.close()
-        except (PermissionError, OSError):
-            continue
-    return keyboards
 
 
 def _get_ollama_models(generate_url: str) -> list[str]:
@@ -122,6 +111,7 @@ class AdvancedSettingsDialog(Gtk.Dialog):
         ("whisper_binary",     "Whisper binary:"),
         ("model_path",         "Model path:"),
         ("audio_path",         "Audio temp file:"),
+        ("audio_backend",      "Audio backend:"),
         ("language",           "Language:"),
         ("run_command_prefix", "Command prefix:"),
         ("terminal_command",   "Terminal command:"),
@@ -532,7 +522,21 @@ class WhisperTray:
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
-    WhisperTray(bus)
+    try:
+        WhisperTray(bus)
+    except dbus.exceptions.DBusException as e:
+        if "StatusNotifierWatcher" in str(e):
+            print(
+                "ERROR: org.kde.StatusNotifierWatcher not found on the session bus.\n"
+                "The system tray is unavailable.\n\n"
+                "On GNOME, install and enable the AppIndicator extension:\n"
+                "  Ubuntu/Debian:  sudo apt install gnome-shell-extension-appindicator\n"
+                "  Fedora:         sudo dnf install gnome-shell-extension-appindicator\n"
+                "Then log out and back in, and enable it via GNOME Extensions.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
     Gtk.main()
 
 

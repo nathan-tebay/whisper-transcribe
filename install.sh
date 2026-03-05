@@ -14,20 +14,99 @@ BUILD_TMP=/tmp/whisper-cpp-build
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
 skip()  { echo -e "${YELLOW}[SKIP]${NC}  $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*" >&2; }
 done_() { echo -e "${GREEN}[DONE]${NC}  $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+
+# ── Distro detection ──────────────────────────────────────────────────────────
+DISTRO_FAMILY=""
+
+detect_distro() {
+    [[ -f /etc/os-release ]] || error "Cannot detect distro: /etc/os-release not found."
+    # shellcheck source=/dev/null
+    . /etc/os-release
+    case "${ID:-}" in
+        fedora|rhel|centos|rocky|almalinux)
+            DISTRO_FAMILY="fedora" ;;
+        ubuntu|debian|linuxmint|pop)
+            DISTRO_FAMILY="debian" ;;
+        *)
+            case "${ID_LIKE:-}" in
+                *fedora*|*rhel*)   DISTRO_FAMILY="fedora" ;;
+                *debian*|*ubuntu*) DISTRO_FAMILY="debian" ;;
+                *) error "Unsupported distro '${ID:-unknown}'. Supported families: Fedora/RHEL, Debian/Ubuntu." ;;
+            esac
+            ;;
+    esac
+    info "Detected distro: ${PRETTY_NAME:-$ID} (family=$DISTRO_FAMILY)"
+}
+
+# ── GPU / build-backend detection ────────────────────────────────────────────
+detect_build_backend() {
+    # Already set via --build-backend flag — nothing to do.
+    [[ -n "$BUILD_BACKEND" ]] && { info "Build backend: $BUILD_BACKEND (from --build-backend flag)"; return; }
+
+    local -a options=("cpu")
+    local -a labels=("CPU only (no GPU acceleration)")
+
+    # NVIDIA — check for loaded driver or hardware presence
+    if command -v nvidia-smi &>/dev/null || lspci 2>/dev/null | grep -qi nvidia; then
+        options+=("cuda")
+        labels+=("CUDA (NVIDIA GPU)")
+    fi
+
+    # Vulkan — check for installed ICDs (covers AMD, Intel, and NVIDIA with Vulkan drivers)
+    if ls /usr/share/vulkan/icd.d/*.json /etc/vulkan/icd.d/*.json &>/dev/null 2>&1; then
+        options+=("vulkan")
+        labels+=("Vulkan (AMD / Intel / NVIDIA)")
+    fi
+
+    if [[ ${#options[@]} -eq 1 ]]; then
+        BUILD_BACKEND="cpu"
+        info "No GPU detected — using CPU backend."
+        return
+    fi
+
+    echo ""
+    info "GPU support detected. Select a build backend for whisper.cpp:"
+    for i in "${!options[@]}"; do
+        printf "    [%d] %s\n" "$i" "${labels[$i]}"
+    done
+    echo ""
+    while true; do
+        read -rp "    Backend [0]: " choice
+        choice="${choice:-0}"
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice < ${#options[@]} )); then
+            BUILD_BACKEND="${options[$choice]}"
+            break
+        fi
+        echo "    Enter a number between 0 and $(( ${#options[@]} - 1 ))."
+    done
+    info "Build backend: $BUILD_BACKEND"
+}
+
+# ── pip helper — handles --break-system-packages on Python 3.11+ ──────────────
+_pip_install() {
+    local flags="--prefix=/usr/local"
+    pip3 install --help 2>&1 | grep -q -- "--break-system-packages" \
+        && flags="$flags --break-system-packages"
+    pip3 install $flags "$@"
+}
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 FORCE_REBUILD=0
 UNINSTALL=0
 TARGET_USER=""
+BUILD_BACKEND=""   # cpu | vulkan | cuda  (empty = auto-detect + prompt)
 
 usage() {
-    echo "Usage: sudo $0 USERNAME [--force-rebuild] [--uninstall]"
+    echo "Usage: sudo $0 USERNAME [OPTIONS]"
     echo ""
-    echo "  USERNAME        The local user to set up whisper-transcribe for."
-    echo "  --force-rebuild Re-clone and recompile whisper.cpp even if already built."
-    echo "  --uninstall     Remove all installed components for USERNAME."
+    echo "  USERNAME                    The local user to set up whisper-transcribe for."
+    echo "  --build-backend=cpu|vulkan|cuda"
+    echo "                              GPU backend for whisper.cpp. Skips the prompt."
+    echo "  --force-rebuild             Re-clone and recompile whisper.cpp even if already built."
+    echo "  --uninstall                 Remove all installed components for USERNAME."
     exit 1
 }
 
@@ -35,15 +114,23 @@ usage() {
 
 for arg in "$@"; do
     case "$arg" in
-        --force-rebuild) FORCE_REBUILD=1 ;;
-        --uninstall)     UNINSTALL=1 ;;
-        --help|-h)       usage ;;
-        -*)              error "Unknown flag: $arg" ;;
-        *)               TARGET_USER="$arg" ;;
+        --force-rebuild)      FORCE_REBUILD=1 ;;
+        --uninstall)          UNINSTALL=1 ;;
+        --build-backend=*)    BUILD_BACKEND="${arg#*=}" ;;
+        --help|-h)            usage ;;
+        -*)                   error "Unknown flag: $arg" ;;
+        *)                    TARGET_USER="$arg" ;;
     esac
 done
 
 [[ -z "$TARGET_USER" ]] && usage
+
+if [[ -n "$BUILD_BACKEND" ]]; then
+    case "$BUILD_BACKEND" in
+        cpu|vulkan|cuda) ;;
+        *) error "Invalid --build-backend='$BUILD_BACKEND'. Valid values: cpu, vulkan, cuda." ;;
+    esac
+fi
 
 # ── Step 1: Validate ──────────────────────────────────────────────────────────
 step_validate() {
@@ -57,35 +144,202 @@ step_validate() {
     getent group input &>/dev/null \
         || error "'input' group does not exist. Is this a Linux desktop system?"
 
+    detect_distro
+
     done_ "Validation passed (user=$TARGET_USER)"
 }
 
 # ── Step 2: System dependencies ───────────────────────────────────────────────
+
+_PKGS_NEEDED=()   # packages to install this run
+_CLEANUP_PKGS=()  # subset that are build-only and should be removed afterwards
+
+# _need CHECK FEDORA_PKG DEBIAN_PKG
+# Queues the distro-appropriate package if CHECK fails (i.e. not already present).
+_need() {
+    local check="$1"
+    local pkg; pkg=$([[ "$DISTRO_FAMILY" = fedora ]] && echo "$2" || echo "$3")
+    if eval "$check" &>/dev/null 2>&1; then
+        skip "$pkg already present."
+    else
+        _PKGS_NEEDED+=("$pkg")
+    fi
+}
+
+# _build_need CHECK FEDORA_PKG DEBIAN_PKG
+# Like _need, but also schedules the package for removal after the build
+# if we are the ones installing it (i.e. it wasn't present before).
+_build_need() {
+    local check="$1"
+    local pkg; pkg=$([[ "$DISTRO_FAMILY" = fedora ]] && echo "$2" || echo "$3")
+    if eval "$check" &>/dev/null 2>&1; then
+        skip "$pkg already present."
+    else
+        _PKGS_NEEDED+=("$pkg")
+        _CLEANUP_PKGS+=("$pkg")
+    fi
+}
+
+# Check if a package name is available in the currently configured repositories.
+_pkg_available() {
+    local pkg="$1"
+    case "$DISTRO_FAMILY" in
+        fedora) dnf info "$pkg" &>/dev/null 2>&1 ;;
+        debian) apt-cache show "$pkg" &>/dev/null 2>&1 ;;
+    esac
+}
+
+# Enable Ubuntu's 'universe' repository if it is not already active.
+# No-op on non-Ubuntu distros.
+_ensure_universe_repo() {
+    [[ "$DISTRO_FAMILY" != "debian" ]] && return
+    grep -q "^ID=ubuntu" /etc/os-release 2>/dev/null || return
+    if grep -rq "\buniverse\b" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+        return  # already enabled
+    fi
+    info "Enabling Ubuntu universe repository..."
+    if command -v add-apt-repository &>/dev/null; then
+        add-apt-repository -y universe
+    else
+        # Fallback: append 'universe' to the first deb line in sources.list.
+        sed -i '/^deb /s/ main$/ main universe/' /etc/apt/sources.list
+    fi
+    apt-get update -qq
+    done_ "Ubuntu universe repository enabled."
+}
+
+# Ensure the NVIDIA CUDA repository is configured.
+# If setup fails, BUILD_BACKEND is downgraded to "cpu" so installation continues.
+_ensure_cuda_repo() {
+    case "$DISTRO_FAMILY" in
+        fedora)
+            if dnf repolist enabled 2>/dev/null | grep -qi "cuda"; then
+                skip "CUDA repository already enabled."
+                return
+            fi
+            local ver; ver=$(rpm -E %fedora 2>/dev/null || echo 39)
+            local url="https://developer.download.nvidia.com/compute/cuda/repos/fedora${ver}/x86_64/cuda-fedora${ver}.repo"
+            info "Adding NVIDIA CUDA repo for Fedora ${ver} ..."
+            if ! dnf config-manager --add-repo "$url" 2>/dev/null; then
+                warn "Failed to add CUDA repo. Falling back to CPU build."
+                warn "To add it manually: dnf config-manager --add-repo $url"
+                BUILD_BACKEND="cpu"
+                return
+            fi
+            dnf clean expire-cache -q
+            done_ "NVIDIA CUDA repository added."
+            ;;
+        debian)
+            if apt-cache policy 2>/dev/null | grep -qi "developer.download.nvidia.com"; then
+                skip "CUDA repository already configured."
+                return
+            fi
+            # shellcheck source=/dev/null
+            . /etc/os-release
+            local arch; arch=$(dpkg --print-architecture 2>/dev/null || echo x86_64)
+            # Build a tag like ubuntu2404 or debian12.
+            local distro_tag="${ID}${VERSION_ID//./}"
+            local base="https://developer.download.nvidia.com/compute/cuda/repos/${distro_tag}/${arch}"
+            info "Downloading NVIDIA CUDA keyring for ${PRETTY_NAME:-$ID} ..."
+            if ! wget -q "$base/cuda-keyring_1.1-1_all.deb" -O /tmp/cuda-keyring.deb 2>/dev/null; then
+                warn "Could not download CUDA keyring. Falling back to CPU build."
+                warn "To add manually, see: https://developer.nvidia.com/cuda-downloads"
+                BUILD_BACKEND="cpu"
+                return
+            fi
+            dpkg -i /tmp/cuda-keyring.deb
+            apt-get update -qq
+            done_ "NVIDIA CUDA repository added."
+            ;;
+    esac
+}
+
 step_system_deps() {
-    info "Installing system dependencies via dnf..."
-    dnf install -y \
-        cmake \
-        gcc-c++ \
-        vulkan-devel \
-        glslc \
-        ydotool \
-        libnotify \
-        pipewire-utils \
-        python3-gobject \
-        git
+    info "Checking system dependencies..."
+    _PKGS_NEEDED=()
+    # Note: _CLEANUP_PKGS is intentionally NOT reset here — it accumulates
+    # across calls so step_cleanup_build_deps sees everything we installed.
+
+    # On Ubuntu, ensure 'universe' repo is enabled — many packages live there.
+    _ensure_universe_repo
+
+    # ── Runtime dependencies (kept after install) ─────────────────────────────
+    _need "command -v ydotool"        ydotool          ydotool
+    _need "command -v notify-send"    libnotify        libnotify-bin
+    _need "command -v pw-record"      pipewire-utils   pipewire-audio-client-libraries
+    _need "command -v parecord"       pulseaudio-utils pulseaudio-utils
+    _need "python3 -c 'import gi'"    python3-gobject  python3-gi
+    _need "python3 -c 'import dbus'"  python3-dbus     python3-dbus
+    _need "python3 -c 'import evdev'" python3-evdev    python3-evdev
+
+    # ── Build-only dependencies (removed after whisper.cpp is compiled) ───────
+    _build_need "command -v cmake"   cmake            cmake
+    _build_need "command -v g++"     gcc-c++          g++
+    _build_need "command -v git"     git              git
+    _build_need "command -v lspci"   pciutils         pciutils
+
+    # Backend-specific build deps
+    case "$BUILD_BACKEND" in
+        vulkan)
+            _build_need "test -f /usr/include/vulkan/vulkan.h" vulkan-devel  libvulkan-dev
+            _build_need "command -v glslc"                     glslc         glslang-tools
+            ;;
+        cuda)
+            # CUDA packages are not in default repos — add the NVIDIA repo first.
+            _ensure_cuda_repo
+            # BUILD_BACKEND may have been downgraded to cpu if repo setup failed.
+            if [[ "$BUILD_BACKEND" == "cuda" ]]; then
+                _build_need "command -v nvcc" cuda-toolkit nvidia-cuda-toolkit
+            fi
+            ;;
+    esac
+
+    if [[ ${#_PKGS_NEEDED[@]} -eq 0 ]]; then
+        skip "All system dependencies already present."
+        return
+    fi
+
+    # Warn about any queued packages that are not found in the configured repos.
+    local unavailable=()
+    for pkg in "${_PKGS_NEEDED[@]}"; do
+        _pkg_available "$pkg" || unavailable+=("$pkg")
+    done
+    if [[ ${#unavailable[@]} -gt 0 ]]; then
+        warn "The following packages were not found in configured repositories and will be skipped:"
+        for pkg in "${unavailable[@]}"; do
+            warn "  - $pkg"
+        done
+        # Remove unavailable packages from the install list.
+        local filtered=()
+        for pkg in "${_PKGS_NEEDED[@]}"; do
+            _pkg_available "$pkg" && filtered+=("$pkg")
+        done
+        _PKGS_NEEDED=("${filtered[@]}")
+    fi
+
+    if [[ ${#_PKGS_NEEDED[@]} -eq 0 ]]; then
+        skip "All system dependencies already present (or unavailable in repos)."
+        return
+    fi
+
+    info "Installing missing packages: ${_PKGS_NEEDED[*]}"
+    case "$DISTRO_FAMILY" in
+        fedora) dnf install -y "${_PKGS_NEEDED[@]}" ;;
+        debian) apt-get update -qq && apt-get install -y "${_PKGS_NEEDED[@]}" ;;
+    esac
     done_ "System dependencies installed."
 }
 
 # ── Step 3: Python dependencies ───────────────────────────────────────────────
 step_python_deps() {
-    # Running as root: pip3 installs to /usr/local/lib64/python3.x/site-packages/
-    # which is system-wide and accessible to all users including TARGET_USER.
+    # evdev is installed via the system package manager in step_system_deps;
+    # this is a fallback in case the distro package is unavailable or outdated.
     if python3 -c "import evdev" &>/dev/null; then
         skip "python3-evdev already importable."
         return
     fi
-    info "Installing python3-evdev..."
-    pip3 install evdev
+    info "Installing python3-evdev via pip..."
+    _pip_install evdev
     done_ "python3-evdev installed."
 }
 # ── Step 4: Build whisper.cpp ─────────────────────────────────────────────────
@@ -99,11 +353,22 @@ step_build_whisper() {
     rm -rf "$BUILD_TMP"
     git clone --depth 1 https://github.com/ggerganov/whisper.cpp "$BUILD_TMP"
 
-    info "Building with Vulkan backend (this takes 5-10 minutes)..."
-    cmake -B "$BUILD_TMP/build" "$BUILD_TMP" \
-        -DGGML_VULKAN=ON \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DCMAKE_BUILD_TYPE=Release
+    local -a cmake_flags=(-DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release)
+    case "$BUILD_BACKEND" in
+        vulkan)
+            cmake_flags+=(-DGGML_VULKAN=ON  -DGGML_CUDA=OFF)
+            info "Building with Vulkan backend (this may take several minutes)..."
+            ;;
+        cuda)
+            cmake_flags+=(-DGGML_CUDA=ON    -DGGML_VULKAN=OFF)
+            info "Building with CUDA backend (this may take several minutes)..."
+            ;;
+        cpu)
+            cmake_flags+=(-DGGML_VULKAN=OFF -DGGML_CUDA=OFF)
+            info "Building with CPU backend (this may take several minutes)..."
+            ;;
+    esac
+    cmake -B "$BUILD_TMP/build" "$BUILD_TMP" "${cmake_flags[@]}"
     cmake --build "$BUILD_TMP/build" --config Release -j"$(nproc)"
 
     local built_bin
@@ -141,10 +406,24 @@ step_download_model() {
     install -m 644 "$BUILD_TMP/models/ggml-large-v3.bin" "$MODEL_FILE"
     done_ "Model installed to $MODEL_FILE"
 }
+# ── Step 5b: Remove build-only packages ──────────────────────────────────────
+step_cleanup_build_deps() {
+    if [[ ${#_CLEANUP_PKGS[@]} -eq 0 ]]; then
+        skip "No build-only packages to remove."
+        return
+    fi
+    info "Removing build-only packages: ${_CLEANUP_PKGS[*]}"
+    case "$DISTRO_FAMILY" in
+        fedora) dnf remove -y "${_CLEANUP_PKGS[@]}" ;;
+        debian) apt-get remove -y "${_CLEANUP_PKGS[@]}" && apt-get autoremove -y ;;
+    esac
+    done_ "Build dependencies removed."
+}
+
 # ── Step 6: Install Python package ───────────────────────────────────────────
 step_install_entry_point() {
     info "Installing whisper-transcribe Python package..."
-    pip3 install --prefix=/usr/local --break-system-packages "$SCRIPT_DIR"
+    _pip_install "$SCRIPT_DIR"
     done_ "Package installed; entry point at $WHISPER_ENTRY"
 }
 # ── Step 7: Input group ───────────────────────────────────────────────────────
@@ -168,6 +447,8 @@ step_systemd_service() {
     mkdir -p "$service_dir"
     chown -R "$TARGET_USER:$TARGET_USER" "$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config"
 
+    # PassEnvironment ensures DISPLAY/WAYLAND_DISPLAY reach the service on X11
+    # sessions where the user manager may not inherit them automatically.
     cat > "$service_file" <<EOF
 [Unit]
 Description=Whisper hotkey transcription daemon
@@ -182,20 +463,24 @@ Restart=on-failure
 RestartSec=5
 SyslogIdentifier=whisper-transcribe
 TimeoutStopSec=5
+PassEnvironment=DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
 
 [Install]
 WantedBy=graphical-session.target
 EOF
     chown "$TARGET_USER:$TARGET_USER" "$service_file"
 
+    local ydotoold_bin
+    ydotoold_bin=$(command -v ydotoold 2>/dev/null || echo /usr/bin/ydotoold)
+
     local ydotool_file="$service_dir/ydotool.service"
-    cat > "$ydotool_file" <<'EOF'
+    cat > "$ydotool_file" <<EOF
 [Unit]
 Description=ydotoold input daemon
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/ydotoold
+ExecStart=$ydotoold_bin
 Restart=on-failure
 RestartSec=3
 
@@ -231,7 +516,58 @@ EOF
     fi
 }
 
-# ── Step 9: Tray autostart ────────────────────────────────────────────────────
+# ── Step 9: GNOME AppIndicator extension ─────────────────────────────────────
+step_gnome_shell_ext() {
+    # Only relevant if the target user is running a GNOME session right now.
+    if ! pgrep -u "$TARGET_USER" gnome-shell &>/dev/null; then
+        return
+    fi
+
+    local ext_id="appindicatorsupport@rgcjonas.gmail.com"
+    local uid; uid=$(id -u "$TARGET_USER")
+    local xdg_runtime="/run/user/$uid"
+    local bus_addr="unix:path=$xdg_runtime/bus"
+
+    info "GNOME session detected — checking AppIndicator extension..."
+
+    # Check if already enabled
+    if [[ -S "$xdg_runtime/bus" ]]; then
+        local enabled
+        enabled=$(sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            gnome-extensions list --enabled 2>/dev/null || echo "")
+        if echo "$enabled" | grep -qF "$ext_id"; then
+            skip "GNOME AppIndicator extension already enabled."
+            return
+        fi
+    fi
+
+    # Install the package if it is available in the configured repositories.
+    info "Installing GNOME AppIndicator extension package..."
+    if _pkg_available gnome-shell-extension-appindicator; then
+        case "$DISTRO_FAMILY" in
+            fedora) dnf install -y gnome-shell-extension-appindicator ;;
+            debian) apt-get install -y gnome-shell-extension-appindicator ;;
+        esac
+    else
+        warn "Package 'gnome-shell-extension-appindicator' not found in configured repos."
+        warn "Install it manually from: https://extensions.gnome.org/extension/615/appindicator-support/"
+    fi
+
+    # Try to enable it in the running session
+    if [[ -S "$xdg_runtime/bus" ]]; then
+        sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            gnome-extensions enable "$ext_id" 2>/dev/null || true
+    fi
+
+    done_ "AppIndicator extension installed."
+    echo "  NOTE: Log out and back in (or restart GNOME Shell) for the tray to appear."
+}
+
+# ── Step 10: Tray autostart ───────────────────────────────────────────────────
 step_tray_autostart() {
     local home_dir
     home_dir="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
@@ -253,7 +589,7 @@ EOF
     done_ "Tray autostart installed at $desktop_file"
 }
 
-# ── Step 10: Done ──────────────────────────────────────────────────────────────
+# ── Step 11: Done ─────────────────────────────────────────────────────────────
 step_done() {
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -302,7 +638,10 @@ step_uninstall() {
     rm -f  "$service_dir/graphical-session.target.wants/ydotool.service"
 
     info "Uninstalling Python package..."
-    pip3 uninstall --break-system-packages -y whisper-transcribe 2>/dev/null || true
+    local uninstall_flags=""
+    pip3 uninstall --help 2>&1 | grep -q -- "--break-system-packages" \
+        && uninstall_flags="--break-system-packages"
+    pip3 uninstall $uninstall_flags -y whisper-transcribe 2>/dev/null || true
     rm -f /usr/local/bin/whisper-transcribe /usr/local/bin/whisper-transcribe-tray
 
     info "Removing whisper-main binary..."
@@ -332,13 +671,16 @@ main() {
     fi
 
     step_validate
+    detect_build_backend
     step_system_deps
     step_python_deps
     step_build_whisper
     step_download_model
+    step_cleanup_build_deps
     step_install_entry_point
     step_input_group
     step_systemd_service
+    step_gnome_shell_ext
     step_tray_autostart
     step_done
 }

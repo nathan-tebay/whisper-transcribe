@@ -1,6 +1,7 @@
 """Keyboard device discovery and event watching."""
 import errno
 import logging
+import subprocess
 
 import evdev
 from evdev import ecodes
@@ -56,7 +57,6 @@ class KeyWatcher:
             self.device.grab()
         except OSError as e:
             try:
-                import subprocess
                 pids = subprocess.check_output(
                     ["fuser", self.device.path], stderr=subprocess.DEVNULL
                 ).decode().split()
@@ -81,3 +81,17 @@ class KeyWatcher:
                 self.device.ungrab()
             except OSError:
                 pass  # device already gone
+
+
+def list_keyboard_devices() -> list[tuple[str, str]]:
+    """Return (path, name) pairs for all devices that can produce key events."""
+    keyboards = []
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+            if ecodes.EV_KEY in dev.capabilities():
+                keyboards.append((path, dev.name))
+            dev.close()
+        except (PermissionError, OSError):
+            continue
+    return keyboards

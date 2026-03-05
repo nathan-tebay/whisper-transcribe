@@ -8,7 +8,7 @@ import sys
 
 import evdev
 
-from .key_watcher import KeyWatcher, find_keyboard_device
+from .key_watcher import KeyWatcher, find_keyboard_device, list_keyboard_devices
 from .recorder import AudioRecorder
 from .transcriber import Transcriber
 from .typer import type_text, press_return
@@ -55,15 +55,7 @@ def _strip_enter_suffix(text: str) -> tuple[str, bool]:
 
 def select_keyboard_interactively() -> str:
     """List keyboard-capable devices, prompt the user, return the chosen name."""
-    keyboards = []
-    for path in evdev.list_devices():
-        try:
-            dev = evdev.InputDevice(path)
-            if evdev.ecodes.EV_KEY in dev.capabilities():
-                keyboards.append((path, dev.name))
-            dev.close()
-        except (PermissionError, OSError):
-            continue
+    keyboards = list_keyboard_devices()
 
     if not keyboards:
         print("No keyboard devices found.", file=sys.stderr)
@@ -179,7 +171,7 @@ def main():
 
     hotkey     = getattr(evdev.ecodes, cfg["hotkey"])
     cmd_hotkey = getattr(evdev.ecodes, cfg["command_hotkey"])
-    recorder    = AudioRecorder(output_path=cfg["audio_path"])
+    recorder    = AudioRecorder(output_path=cfg["audio_path"], backend=cfg["audio_backend"])
     transcriber = Transcriber(binary=cfg["whisper_binary"], model=cfg["model_path"],
                               language=cfg["language"])
     min_duration       = cfg["min_duration"]
