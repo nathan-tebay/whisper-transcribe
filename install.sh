@@ -112,7 +112,27 @@ step_build_whisper() {
     install -m 755 "$built_bin" "$WHISPER_BIN"
     done_ "whisper-main installed to $WHISPER_BIN"
 }
-step_download_model()    { true; }
+# ── Step 5: Download model ────────────────────────────────────────────────────
+step_download_model() {
+    if [[ -f "$MODEL_FILE" ]]; then
+        skip "Model already present at $MODEL_FILE"
+        return
+    fi
+
+    # whisper.cpp must be cloned (done in build step or may already exist)
+    local script="$BUILD_TMP/models/download-ggml-model.sh"
+    if [[ ! -f "$script" ]]; then
+        info "Cloning whisper.cpp for model download helper..."
+        rm -rf "$BUILD_TMP"
+        git clone --depth 1 https://github.com/ggerganov/whisper.cpp "$BUILD_TMP"
+    fi
+
+    mkdir -p "$MODEL_DIR"
+    info "Downloading ggml-large-v3.bin (~3.1 GB)..."
+    bash "$script" large-v3
+    install -m 644 "$BUILD_TMP/models/ggml-large-v3.bin" "$MODEL_FILE"
+    done_ "Model installed to $MODEL_FILE"
+}
 step_install_entry_point() { true; }
 step_input_group()       { true; }
 step_systemd_service()   { true; }
