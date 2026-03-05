@@ -1,6 +1,9 @@
 """System tray icon for whisper-transcribe control."""
+import json
 import os
 import subprocess
+import urllib.request
+from urllib.parse import urlparse, urlunparse
 
 import dbus
 import dbus.service
@@ -10,8 +13,9 @@ import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import GLib, Gtk
 
-SERVICE    = "whisper-transcribe.service"
-DROPIN_DIR = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
+from . import config as _config
+
+SERVICE = "whisper-transcribe.service"
 
 ICON_RUNNING = "audio-input-microphone"
 ICON_STOPPED = "audio-input-microphone-muted"
@@ -35,31 +39,6 @@ def _is_running() -> bool:
     return _systemctl("is-active", SERVICE).stdout.strip() == "active"
 
 
-def _read_dropin(filename: str) -> dict[str, str]:
-    path = os.path.join(DROPIN_DIR, filename)
-    result = {}
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip().strip('"')
-                if line.startswith("Environment="):
-                    val = line[len("Environment="):].strip('"')
-                    if "=" in val:
-                        k, v = val.split("=", 1)
-                        result[k] = v
-    except FileNotFoundError:
-        pass
-    return result
-
-
-def _write_dropin(filename: str, env_vars: dict[str, str]):
-    os.makedirs(DROPIN_DIR, exist_ok=True)
-    with open(os.path.join(DROPIN_DIR, filename), "w") as f:
-        f.write("[Service]\n")
-        for k, v in env_vars.items():
-            f.write(f'Environment="{k}={v}"\n')
-
-
 def _list_keyboards():
     import evdev
     keyboards = []
@@ -74,12 +53,89 @@ def _list_keyboards():
     return keyboards
 
 
-# ── Settings dialog ───────────────────────────────────────────────────────────
+def _get_ollama_models(generate_url: str) -> list[str]:
+    """Query the local Ollama instance for downloaded model names."""
+    try:
+        parts = urlparse(generate_url)
+        tags_url = urlunparse(parts._replace(path="/api/tags"))
+        with urllib.request.urlopen(tags_url, timeout=3) as resp:
+            data = json.loads(resp.read())
+        return sorted(m["name"] for m in data.get("models", []))
+    except Exception:
+        return []
 
-class SettingsDialog(Gtk.Dialog):
-    def __init__(self):
-        super().__init__(title="Whisper Transcribe — Settings")
-        self.set_default_size(420, -1)
+
+def _hardware_keycode_to_evdev_name(hardware_keycode: int) -> str | None:
+    """Convert a GTK hardware_keycode (XKB) to an evdev KEY_* name."""
+    import evdev.ecodes as ec
+    evdev_code = hardware_keycode - 8
+    name = ec.KEY.get(evdev_code)
+    if name is None:
+        return None
+    return name if isinstance(name, str) else name[0]
+
+
+# ── Hotkey capture button ─────────────────────────────────────────────────────
+
+# evdev codes for modifier/lock keys to skip during capture
+_MODIFIER_CODES = {29, 97, 42, 54, 56, 100, 125, 126, 58, 69, 70}
+
+class HotkeyButton(Gtk.Button):
+    """Displays a key name; clicking it captures the next non-modifier keypress."""
+
+    def __init__(self, initial_key: str):
+        super().__init__(label=initial_key)
+        self._key = initial_key
+        self._handler_id = None
+        self.connect("clicked", self._on_clicked)
+
+    def _on_clicked(self, *_):
+        if self._handler_id is not None:
+            return
+        self.set_label("Press a key…")
+        toplevel = self.get_toplevel()
+        self._handler_id = toplevel.connect("key-press-event", self._on_key_press)
+
+    def _on_key_press(self, widget, event):
+        evdev_code = event.hardware_keycode - 8
+        if evdev_code in _MODIFIER_CODES:
+            return True
+        name = _hardware_keycode_to_evdev_name(event.hardware_keycode)
+        if name:
+            self._key = name
+        self.set_label(self._key)
+        widget.disconnect(self._handler_id)
+        self._handler_id = None
+        return True
+
+    @property
+    def key(self) -> str:
+        return self._key
+
+
+# ── Advanced settings dialog ──────────────────────────────────────────────────
+
+class AdvancedSettingsDialog(Gtk.Dialog):
+    """Editor for less-frequently-changed config fields."""
+
+    _FIELDS = [
+        ("whisper_binary",     "Whisper binary:"),
+        ("model_path",         "Model path:"),
+        ("audio_path",         "Audio temp file:"),
+        ("language",           "Language:"),
+        ("run_command_prefix", "Command prefix:"),
+        ("terminal_command",   "Terminal command:"),
+        ("ollama_url",         "Ollama URL:"),
+    ]
+    _NUMERIC = [
+        ("min_duration",   "Min duration (s):",   0.1, 10.0, 0.1, 1),
+        ("ollama_timeout", "Ollama timeout (s):",  5,  300,  1,   0),
+        ("claude_timeout", "Claude timeout (s):",  5,  300,  1,   0),
+    ]
+
+    def __init__(self, parent, cfg: dict):
+        super().__init__(title="Advanced Settings", transient_for=parent, modal=True)
+        self.set_default_size(520, -1)
         self.add_buttons(
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             Gtk.STOCK_OK,     Gtk.ResponseType.OK,
@@ -88,11 +144,55 @@ class SettingsDialog(Gtk.Dialog):
         grid = Gtk.Grid(column_spacing=12, row_spacing=8, margin=12)
         self.get_content_area().add(grid)
 
-        # Keyboard
-        grid.attach(Gtk.Label(label="Keyboard:", halign=Gtk.Align.END), 0, 0, 1, 1)
+        self._entries: dict[str, Gtk.Entry] = {}
+        for row, (key, label) in enumerate(self._FIELDS):
+            grid.attach(Gtk.Label(label=label, halign=Gtk.Align.END), 0, row, 1, 1)
+            entry = Gtk.Entry(text=str(cfg.get(key, "")), hexpand=True)
+            grid.attach(entry, 1, row, 1, 1)
+            self._entries[key] = entry
+
+        self._spins: dict[str, Gtk.SpinButton] = {}
+        for i, (key, label, lo, hi, step, digits) in enumerate(self._NUMERIC):
+            row = len(self._FIELDS) + i
+            grid.attach(Gtk.Label(label=label, halign=Gtk.Align.END), 0, row, 1, 1)
+            adj = Gtk.Adjustment(value=float(cfg.get(key, lo)),
+                                 lower=lo, upper=hi, step_increment=step)
+            spin = Gtk.SpinButton(adjustment=adj, digits=digits)
+            grid.attach(spin, 1, row, 1, 1)
+            self._spins[key] = spin
+
+        self.show_all()
+
+    def apply(self, cfg: dict):
+        for key, entry in self._entries.items():
+            cfg[key] = entry.get_text().strip()
+        for key, _label, _lo, _hi, _step, digits in self._NUMERIC:
+            spin = self._spins[key]
+            cfg[key] = spin.get_value() if digits > 0 else int(spin.get_value())
+
+
+# ── Settings dialog ───────────────────────────────────────────────────────────
+
+class SettingsDialog(Gtk.Dialog):
+    def __init__(self):
+        super().__init__(title="Whisper Transcribe — Settings")
+        self.set_default_size(460, -1)
+        self.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK,     Gtk.ResponseType.OK,
+        )
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8, margin=12)
+        self.get_content_area().add(grid)
+
+        cfg = _config.load()
+        row = 0
+
+        # Keyboard filter
+        grid.attach(Gtk.Label(label="Keyboard:", halign=Gtk.Align.END), 0, row, 1, 1)
         self._keyboard_combo = Gtk.ComboBoxText()
         keyboards = _list_keyboards()
-        current_kb = _read_dropin("keyboard.conf").get("WHISPER_KEYBOARD", "")
+        current_kb = cfg.get("keyboard_filter", "")
         selected_idx = 0
         for i, (path, name) in enumerate(keyboards):
             self._keyboard_combo.append(name, f"{name}  ({path})")
@@ -100,25 +200,50 @@ class SettingsDialog(Gtk.Dialog):
                                or name.lower() in current_kb.lower()):
                 selected_idx = i
         self._keyboard_combo.set_active(selected_idx)
-        grid.attach(self._keyboard_combo, 1, 0, 1, 1)
+        grid.attach(self._keyboard_combo, 1, row, 1, 1)
+        row += 1
 
-        # Backend
-        grid.attach(Gtk.Label(label="Command backend:", halign=Gtk.Align.END), 0, 1, 1, 1)
+        # Transcribe hotkey
+        grid.attach(Gtk.Label(label="Transcribe hotkey:", halign=Gtk.Align.END), 0, row, 1, 1)
+        self._hotkey_btn = HotkeyButton(cfg.get("hotkey", "KEY_SCROLLLOCK"))
+        grid.attach(self._hotkey_btn, 1, row, 1, 1)
+        row += 1
+
+        # Command hotkey
+        grid.attach(Gtk.Label(label="Command hotkey:", halign=Gtk.Align.END), 0, row, 1, 1)
+        self._cmd_hotkey_btn = HotkeyButton(cfg.get("command_hotkey", "KEY_PAUSE"))
+        grid.attach(self._cmd_hotkey_btn, 1, row, 1, 1)
+        row += 1
+
+        # Command backend
+        grid.attach(Gtk.Label(label="Command backend:", halign=Gtk.Align.END), 0, row, 1, 1)
         self._backend_combo = Gtk.ComboBoxText()
         for b in ["ollama", "claude"]:
             self._backend_combo.append(b, b)
-        backend_settings = _read_dropin("backend.conf")
-        current_backend = backend_settings.get("WHISPER_COMMAND_BACKEND", "ollama")
-        self._backend_combo.set_active_id(current_backend)
+        self._backend_combo.set_active_id(cfg.get("command_backend", "ollama"))
         self._backend_combo.connect("changed", self._on_backend_changed)
-        grid.attach(self._backend_combo, 1, 1, 1, 1)
+        grid.attach(self._backend_combo, 1, row, 1, 1)
+        row += 1
 
-        # Ollama model
+        # Ollama model dropdown
         self._model_label = Gtk.Label(label="Ollama model:", halign=Gtk.Align.END)
-        grid.attach(self._model_label, 0, 2, 1, 1)
-        current_model = backend_settings.get("WHISPER_OLLAMA_MODEL", "qwen2.5:7b")
-        self._model_entry = Gtk.Entry(text=current_model)
-        grid.attach(self._model_entry, 1, 2, 1, 1)
+        grid.attach(self._model_label, 0, row, 1, 1)
+        self._model_combo = Gtk.ComboBoxText.new_with_entry()
+        current_model = cfg.get("ollama_model", "")
+        models = _get_ollama_models(cfg.get("ollama_url", _config.DEFAULTS["ollama_url"]))
+        if current_model and current_model not in models:
+            models = [current_model] + models
+        for m in models:
+            self._model_combo.append_text(m)
+        if current_model in models:
+            self._model_combo.set_active(models.index(current_model))
+        grid.attach(self._model_combo, 1, row, 1, 1)
+        row += 1
+
+        # Advanced settings button
+        adv_btn = Gtk.Button(label="Advanced settings…")
+        adv_btn.connect("clicked", self._on_advanced)
+        grid.attach(adv_btn, 1, row, 1, 1)
 
         self._on_backend_changed(self._backend_combo)
         self.show_all()
@@ -126,20 +251,34 @@ class SettingsDialog(Gtk.Dialog):
     def _on_backend_changed(self, combo):
         visible = combo.get_active_id() == "ollama"
         self._model_label.set_visible(visible)
-        self._model_entry.set_visible(visible)
+        self._model_combo.set_visible(visible)
+
+    def _on_advanced(self, _):
+        cfg = _config.load()
+        dlg = AdvancedSettingsDialog(self, cfg)
+        if dlg.run() == Gtk.ResponseType.OK:
+            dlg.apply(cfg)
+            _config.save(cfg)
+        dlg.destroy()
 
     def apply(self):
+        cfg = _config.load()
+
         kb_id = self._keyboard_combo.get_active_id()
         if kb_id:
-            _write_dropin("keyboard.conf", {"WHISPER_KEYBOARD": kb_id})
+            cfg["keyboard_filter"] = kb_id
+
+        cfg["hotkey"]         = self._hotkey_btn.key
+        cfg["command_hotkey"] = self._cmd_hotkey_btn.key
 
         backend = self._backend_combo.get_active_id() or "ollama"
-        env: dict[str, str] = {"WHISPER_COMMAND_BACKEND": backend}
+        cfg["command_backend"] = backend
         if backend == "ollama":
-            env["WHISPER_OLLAMA_MODEL"] = self._model_entry.get_text().strip()
-        _write_dropin("backend.conf", env)
+            model = self._model_combo.get_child().get_text().strip()
+            if model:
+                cfg["ollama_model"] = model
 
-        _systemctl("daemon-reload")
+        _config.save(cfg)
         _systemctl("restart", SERVICE)
 
 

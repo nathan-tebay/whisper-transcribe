@@ -13,22 +13,10 @@ from .recorder import AudioRecorder
 from .transcriber import Transcriber
 from .typer import type_text, press_return
 from .commander import run_command
+from . import config as _config
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-# Configuration — edit these to taste
-MODEL_PATH            = "/usr/local/share/whisper/models/ggml-large-v3.bin"
-WHISPER_BIN           = "/usr/local/bin/whisper-main"
-AUDIO_PATH            = "/tmp/whisper-in.wav"
-HOTKEY                = evdev.ecodes.KEY_SCROLLLOCK
-DEFAULT_KEYBOARD_FILTER = "Arduino"
-MIN_DURATION          = 0.5   # seconds; shorter recordings discarded
-RUN_COMMAND_PREFIX    = "command"
-LANGUAGE              = "en"
-
-_DROPIN_DIR  = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
-_DROPIN_FILE = os.path.join(_DROPIN_DIR, "keyboard.conf")
 
 PUNCT = ' \t,.:;!?'
 
@@ -40,19 +28,19 @@ def notify(summary: str, body: str = "", urgency: str = "normal"):
     )
 
 
-def _extract_command(text: str) -> str | None:
+def _extract_command(text: str, prefix: str) -> str | None:
     """Return the natural-language portion if text starts with the command prefix.
 
     Requires a non-alpha character after the prefix to avoid matching words
     like 'commander'.
     """
     tl = text.lower()
-    if not tl.startswith(RUN_COMMAND_PREFIX):
+    if not tl.startswith(prefix):
         return None
-    rest = tl[len(RUN_COMMAND_PREFIX):]
+    rest = tl[len(prefix):]
     if rest and rest[0].isalpha():
         return None
-    return text[len(RUN_COMMAND_PREFIX):].lstrip(PUNCT)
+    return text[len(prefix):].lstrip(PUNCT)
 
 
 def _strip_enter_suffix(text: str) -> tuple[str, bool]:
@@ -96,28 +84,23 @@ def select_keyboard_interactively() -> str:
         print(f"Enter a number between 0 and {len(keyboards) - 1}.")
 
 
-_BACKEND_DROPIN_FILE = os.path.join(_DROPIN_DIR, "backend.conf")
-
-
-def _write_dropin(path: str, lines: list[str]):
-    os.makedirs(_DROPIN_DIR, exist_ok=True)
-    with open(path, "w") as f:
-        f.write("[Service]\n")
-        for line in lines:
-            f.write(f"{line}\n")
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+def _restart_service():
     subprocess.run(["systemctl", "--user", "restart", "whisper-transcribe.service"], check=True)
     print("Service restarted.")
 
 
 def _save_and_restart(keyboard_name: str):
-    """Persist keyboard choice as a systemd drop-in and restart the service."""
-    _write_dropin(_DROPIN_FILE, [f'Environment="WHISPER_KEYBOARD={keyboard_name}"'])
-    print(f"Saved: WHISPER_KEYBOARD={keyboard_name!r}")
+    """Persist keyboard choice to config.json and restart the service."""
+    cfg = _config.load()
+    cfg["keyboard_filter"] = keyboard_name
+    _config.save(cfg)
+    print(f"Saved: keyboard_filter={keyboard_name!r}")
+    _restart_service()
 
 
 def _select_backend_interactively() -> tuple[str, str | None]:
     """Prompt user to select backend and optionally an Ollama model."""
+    cfg = _config.load()
     backends = ["ollama", "claude"]
     print("Available backends:")
     for i, b in enumerate(backends):
@@ -131,11 +114,11 @@ def _select_backend_interactively() -> tuple[str, str | None]:
                 break
         except (ValueError, EOFError):
             pass
-        print(f"Enter 0 or 1.")
+        print("Enter 0 or 1.")
 
     model = None
     if backend == "ollama":
-        default_model = os.environ.get("WHISPER_OLLAMA_MODEL", "qwen2.5:7b")
+        default_model = cfg["ollama_model"]
         try:
             model = input(f"Ollama model [{default_model}]: ").strip() or default_model
         except EOFError:
@@ -145,21 +128,25 @@ def _select_backend_interactively() -> tuple[str, str | None]:
 
 
 def _save_backend_and_restart(backend: str, model: str | None):
-    """Persist backend/model as a systemd drop-in and restart the service."""
-    lines = [f'Environment="WHISPER_COMMAND_BACKEND={backend}"']
+    """Persist backend/model to config.json and restart the service."""
+    cfg = _config.load()
+    cfg["command_backend"] = backend
     if model:
-        lines.append(f'Environment="WHISPER_OLLAMA_MODEL={model}"')
-    _write_dropin(_BACKEND_DROPIN_FILE, lines)
-    print(f"Saved: backend={backend!r}" + (f", model={model!r}" if model else ""))
+        cfg["ollama_model"] = model
+    _config.save(cfg)
+    print(f"Saved: command_backend={backend!r}" + (f", ollama_model={model!r}" if model else ""))
+    _restart_service()
 
 
 def main():
+    cfg = _config.load()
+
     parser = argparse.ArgumentParser(description="Whisper hotkey transcription daemon")
     parser.add_argument(
         "-k", "--keyboard",
         nargs="?",
         const="__select__",
-        default=os.environ.get("WHISPER_KEYBOARD", DEFAULT_KEYBOARD_FILTER),
+        default=os.environ.get("WHISPER_KEYBOARD", cfg["keyboard_filter"]),
         metavar="FILTER",
         help="Device name filter (substring match, case-insensitive). "
              "Omit the value to pick interactively. "
@@ -190,9 +177,14 @@ def main():
         _save_backend_and_restart(backend, model)
         sys.exit(0)
 
-    recorder    = AudioRecorder(output_path=AUDIO_PATH)
-    transcriber = Transcriber(binary=WHISPER_BIN, model=MODEL_PATH, language=LANGUAGE)
-    _recording  = False
+    hotkey     = getattr(evdev.ecodes, cfg["hotkey"])
+    cmd_hotkey = getattr(evdev.ecodes, cfg["command_hotkey"])
+    recorder    = AudioRecorder(output_path=cfg["audio_path"])
+    transcriber = Transcriber(binary=cfg["whisper_binary"], model=cfg["model_path"],
+                              language=cfg["language"])
+    min_duration       = cfg["min_duration"]
+    run_command_prefix = cfg["run_command_prefix"]
+    _recording = False
 
     def on_press():
         nonlocal _recording
@@ -203,25 +195,30 @@ def main():
         logger.info("Recording started")
         recorder.start()
 
-    def on_release():
+    def _stop_and_transcribe(label: str) -> str | None:
+        """Stop recorder and transcribe. Returns text or None (already notifies on failure)."""
         nonlocal _recording
         if not _recording:
-            return
+            return None
         _recording = False
         duration = recorder.stop()
-        logger.info("Recording stopped (%.2fs)", duration)
-        if duration < MIN_DURATION:
-            logger.info("Too short (%.2fs < %.2fs), discarded", duration, MIN_DURATION)
-            return
-
-        text = transcriber.transcribe(AUDIO_PATH)
+        logger.info("%s recording stopped (%.2fs)", label, duration)
+        if duration < min_duration:
+            logger.info("Too short (%.2fs < %.2fs), discarded", duration, min_duration)
+            return None
+        text = transcriber.transcribe(cfg["audio_path"])
         if text is None:
             logger.error("Transcription failed")
             notify("Whisper", "Transcription failed", urgency="critical")
+        return text
+
+    def on_release():
+        text = _stop_and_transcribe("Transcribe")
+        if text is None:
             return
         logger.info("Transcribed: %r", text)
 
-        natural = _extract_command(text)
+        natural = _extract_command(text, run_command_prefix)
         if natural is not None:
             logger.info("Command trigger: %r", natural)
             if not run_command(natural):
@@ -238,6 +235,17 @@ def main():
         if send_return:
             press_return()
 
+    def on_cmd_release():
+        text = _stop_and_transcribe("Command")
+        if text is None:
+            return
+        logger.info("Command transcribed: %r", text)
+
+        # Strip the command prefix if present, otherwise use the full text
+        natural = _extract_command(text, run_command_prefix) or text
+        if not run_command(natural):
+            notify("Whisper", "Command failed", urgency="critical")
+
     def _cleanup(signum, frame):
         logger.info("Shutting down (signal %d)", signum)
         try:
@@ -249,7 +257,7 @@ def main():
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT, _cleanup)
 
-    device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
+    device = find_keyboard_device([hotkey, cmd_hotkey], name_filter=args.keyboard)
     if device is None:
         logger.error("No keyboard device found (filter=%r).", args.keyboard)
         logger.error(
@@ -259,8 +267,10 @@ def main():
         sys.exit(1)
 
     logger.info("Listening on %s (%s)", device.path, device.name)
-    watcher = KeyWatcher(device=device, keycode=HOTKEY,
-                         on_press=on_press, on_release=on_release)
+    watcher = KeyWatcher(device=device, callbacks={
+        hotkey:     (on_press, on_release),
+        cmd_hotkey: (on_press, on_cmd_release),
+    })
     watcher.run()
 
 

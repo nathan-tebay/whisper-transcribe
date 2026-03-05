@@ -7,16 +7,9 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from . import config as _config
+
 logger = logging.getLogger(__name__)
-
-# Backend selection: "ollama" (default) or "claude"
-BACKEND        = os.environ.get("WHISPER_COMMAND_BACKEND", "ollama")
-OLLAMA_MODEL   = os.environ.get("WHISPER_OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_URL     = "http://localhost:11434/api/generate"
-OLLAMA_TIMEOUT = 30  # seconds
-
-CLAUDE_CLI     = "claude"
-CLAUDE_TIMEOUT = 30  # seconds
 
 _PROMPT_TEMPLATE = (
     "Convert the following spoken command into one of the response formats below.\n"
@@ -72,26 +65,29 @@ def _build_prompt(natural_language: str) -> str:
     )
 
 
-def ask_ollama(natural_language: str) -> str | None:
+def ask_ollama(natural_language: str, cfg: dict) -> str | None:
     """Send prompt to local Ollama; return single-line response or None on failure."""
+    model   = os.environ.get("WHISPER_OLLAMA_MODEL", cfg["ollama_model"])
+    url     = cfg["ollama_url"]
+    timeout = cfg["ollama_timeout"]
     payload = json.dumps({
-        "model": OLLAMA_MODEL,
+        "model": model,
         "prompt": _build_prompt(natural_language),
         "stream": False,
     }).encode()
     req = urllib.request.Request(
-        OLLAMA_URL,
+        url,
         data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
     except urllib.error.URLError as e:
         logger.error("Ollama request failed: %s", e)
         return None
     except TimeoutError:
-        logger.error("Ollama timed out after %ds", OLLAMA_TIMEOUT)
+        logger.error("Ollama timed out after %ds", timeout)
         return None
 
     response = data.get("response", "").strip()
@@ -102,15 +98,16 @@ def ask_ollama(natural_language: str) -> str | None:
     return response.splitlines()[0].strip()
 
 
-def ask_claude(natural_language: str) -> str | None:
+def ask_claude(natural_language: str, cfg: dict) -> str | None:
     """Call Claude CLI; return stripped single-line response or None on failure."""
+    timeout = cfg["claude_timeout"]
     try:
         result = subprocess.run(
-            [CLAUDE_CLI, "--print", _build_prompt(natural_language)],
-            capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
+            ["claude", "--print", _build_prompt(natural_language)],
+            capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        logger.error("Claude CLI timed out after %ds", CLAUDE_TIMEOUT)
+        logger.error("Claude CLI timed out after %ds", timeout)
         return None
     except OSError as e:
         logger.error("Failed to invoke Claude CLI: %s", e)
@@ -127,7 +124,7 @@ def ask_claude(natural_language: str) -> str | None:
     return response.splitlines()[0].strip()
 
 
-def execute_command(response: str) -> bool:
+def execute_command(response: str, cfg: dict) -> bool:
     """Parse 'GUI: cmd' or 'TERMINAL: cmd' and execute. Returns True if launched."""
     if response.upper().startswith("GUI:"):
         cmd = response[4:].strip()
@@ -148,7 +145,8 @@ def execute_command(response: str) -> bool:
         cmd = response[9:].strip()
         logger.info("Executing terminal command: %r", cmd)
         try:
-            subprocess.Popen(["konsole", "--new-tab", "-e", "bash", "-c", cmd])
+            terminal_parts = shlex.split(cfg["terminal_command"])
+            subprocess.Popen(terminal_parts + [cmd])
             return True
         except OSError as e:
             logger.error("Failed to launch terminal command %r: %s", cmd, e)
@@ -166,11 +164,14 @@ def execute_command(response: str) -> bool:
 
 def run_command(natural_language: str) -> bool:
     """Full pipeline: interpret with selected backend, then execute."""
-    if BACKEND == "claude":
-        response = ask_claude(natural_language)
+    cfg     = _config.load()
+    backend = os.environ.get("WHISPER_COMMAND_BACKEND", cfg["command_backend"])
+
+    if backend == "claude":
+        response = ask_claude(natural_language, cfg)
     else:
-        response = ask_ollama(natural_language)
+        response = ask_ollama(natural_language, cfg)
 
     if response is None:
         return False
-    return execute_command(response)
+    return execute_command(response, cfg)

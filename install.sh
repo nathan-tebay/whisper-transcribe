@@ -144,7 +144,7 @@ step_download_model() {
 # ── Step 6: Install Python package ───────────────────────────────────────────
 step_install_entry_point() {
     info "Installing whisper-transcribe Python package..."
-    pip3 install --break-system-packages "$SCRIPT_DIR"
+    pip3 install --prefix=/usr/local --break-system-packages "$SCRIPT_DIR"
     done_ "Package installed; entry point at $WHISPER_ENTRY"
 }
 # ── Step 7: Input group ───────────────────────────────────────────────────────
@@ -303,6 +303,7 @@ step_uninstall() {
 
     info "Uninstalling Python package..."
     pip3 uninstall --break-system-packages -y whisper-transcribe 2>/dev/null || true
+    rm -f /usr/local/bin/whisper-transcribe /usr/local/bin/whisper-transcribe-tray
 
     info "Removing whisper-main binary..."
     rm -f "$WHISPER_BIN"
