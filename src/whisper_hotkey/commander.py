@@ -7,7 +7,7 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 CLAUDE_CLI     = "claude"
-CLAUDE_TIMEOUT = 15  # seconds
+CLAUDE_TIMEOUT = 30  # seconds
 
 _PROMPT_TEMPLATE = (
     "Convert the following spoken command to a shell command for KDE Plasma on Fedora Linux.\n"
@@ -72,7 +72,12 @@ def execute_command(response: str) -> bool:
         cmd = response[4:].strip()
         logger.info("Executing GUI command: %r", cmd)
         try:
-            subprocess.Popen(shlex.split(cmd), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd_parts = shlex.split(cmd)
+        except ValueError as e:
+            logger.error("Failed to parse GUI command %r: %s", cmd, e)
+            return False
+        try:
+            subprocess.Popen(cmd_parts, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return True
         except OSError as e:
             logger.error("Failed to launch GUI command %r: %s", cmd, e)

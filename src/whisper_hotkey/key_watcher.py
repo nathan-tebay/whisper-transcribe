@@ -1,6 +1,11 @@
 """Keyboard device discovery and event watching."""
+import errno
+import logging
+
 import evdev
 from evdev import ecodes
+
+logger = logging.getLogger(__name__)
 
 
 def find_keyboard_device(keycode: int = ecodes.KEY_SCROLLLOCK, name_filter: str = ""):
@@ -18,7 +23,7 @@ def find_keyboard_device(keycode: int = ecodes.KEY_SCROLLLOCK, name_filter: str 
             caps = dev.capabilities()
             if keycode in caps.get(ecodes.EV_KEY, []):
                 return dev
-            dev.close()  # close non-matching devices to avoid fd leaks
+            dev.close()
         except (PermissionError, OSError):
             continue
     return None
@@ -43,12 +48,12 @@ class KeyWatcher:
         # value == 2 is autorepeat — intentionally ignored for hold-to-talk
 
     def run(self):
-        """Block and process events. Call from a thread."""
+        """Block and process events. Exits cleanly if the device disconnects."""
         try:
             self.device.grab()
         except OSError as e:
-            import subprocess
             try:
+                import subprocess
                 pids = subprocess.check_output(
                     ["fuser", self.device.path], stderr=subprocess.DEVNULL
                 ).decode().split()
@@ -59,8 +64,17 @@ class KeyWatcher:
                 f"Failed to grab {self.device.path}: device busy (held by PID {holders}). "
                 "Stop any other whisper-transcribe instance first."
             ) from e
+
         try:
             for event in self.device.read_loop():
                 self.handle_event(event)
+        except OSError as e:
+            if e.errno == errno.ENODEV:
+                logger.error("Input device disconnected: %s", self.device.path)
+            else:
+                raise
         finally:
-            self.device.ungrab()
+            try:
+                self.device.ungrab()
+            except OSError:
+                pass  # device already gone

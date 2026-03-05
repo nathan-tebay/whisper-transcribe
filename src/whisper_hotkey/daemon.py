@@ -18,17 +18,19 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 logger = logging.getLogger(__name__)
 
 # Configuration — edit these to taste
-MODEL_PATH   = "/usr/local/share/whisper/models/ggml-large-v3.bin"
-WHISPER_BIN  = "/usr/local/bin/whisper-main"
-AUDIO_PATH   = "/tmp/whisper-in.wav"
-HOTKEY                  = evdev.ecodes.KEY_SCROLLLOCK
+MODEL_PATH            = "/usr/local/share/whisper/models/ggml-large-v3.bin"
+WHISPER_BIN           = "/usr/local/bin/whisper-main"
+AUDIO_PATH            = "/tmp/whisper-in.wav"
+HOTKEY                = evdev.ecodes.KEY_SCROLLLOCK
 DEFAULT_KEYBOARD_FILTER = "Arduino"
-MIN_DURATION = 0.5   # seconds; shorter recordings discarded
-RUN_COMMAND_PREFIX = "command"
-LANGUAGE     = "en"
+MIN_DURATION          = 0.5   # seconds; shorter recordings discarded
+RUN_COMMAND_PREFIX    = "command"
+LANGUAGE              = "en"
 
-recorder    = AudioRecorder(output_path=AUDIO_PATH)
-transcriber = Transcriber(binary=WHISPER_BIN, model=MODEL_PATH, language=LANGUAGE)
+_DROPIN_DIR  = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
+_DROPIN_FILE = os.path.join(_DROPIN_DIR, "keyboard.conf")
+
+PUNCT = ' \t,.:;!?'
 
 
 def notify(summary: str, body: str = "", urgency: str = "normal"):
@@ -38,49 +40,29 @@ def notify(summary: str, body: str = "", urgency: str = "normal"):
     )
 
 
-def on_press():
-    logger.info("Recording started")
-    recorder.start()
+def _extract_command(text: str) -> str | None:
+    """Return the natural-language portion if text starts with the command prefix.
+
+    Requires a non-alpha character after the prefix to avoid matching words
+    like 'commander'.
+    """
+    tl = text.lower()
+    if not tl.startswith(RUN_COMMAND_PREFIX):
+        return None
+    rest = tl[len(RUN_COMMAND_PREFIX):]
+    if rest and rest[0].isalpha():
+        return None
+    return text[len(RUN_COMMAND_PREFIX):].lstrip(PUNCT)
 
 
-def on_release():
-    duration = recorder.stop()
-    logger.info("Recording stopped (%.2fs)", duration)
-    if duration < MIN_DURATION:
-        logger.info("Too short (%.2fs < %.2fs), discarded", duration, MIN_DURATION)
-        return
-    text = transcriber.transcribe(AUDIO_PATH)
-    if text is None:
-        logger.error("Transcription failed")
-        notify("Whisper", "Transcription failed", urgency="critical")
-        return
-    logger.info("Transcribed: %r", text)
-    if text.lower().startswith(RUN_COMMAND_PREFIX):
-        natural = text[len(RUN_COMMAND_PREFIX):].lstrip(' \t,.:;!?')
-        logger.info("Run-command trigger: %r", natural)
-        if not run_command(natural):
-            notify("Whisper", "Command failed", urgency="critical")
-        return
-
-    # Strip trailing punctuation then check for "enter" suffix
-    stripped = text.rstrip(' \t,.:;!?')
+def _strip_enter_suffix(text: str) -> tuple[str, bool]:
+    """Strip trailing 'enter' keyword. Returns (text, should_press_enter)."""
+    stripped = text.rstrip(PUNCT)
+    if stripped.lower() == "enter":
+        return "", True
     if stripped.lower().endswith(" enter"):
-        text = stripped[:-len(" enter")]
-        send_return = True
-    else:
-        send_return = False
-
-    if not type_text(text):
-        logger.error("Failed to type text")
-        notify("Whisper", "Failed to type text", urgency="critical")
-        return
-
-    if send_return:
-        press_return()
-
-
-_DROPIN_DIR  = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
-_DROPIN_FILE = os.path.join(_DROPIN_DIR, "keyboard.conf")
+        return stripped[:-len(" enter")], True
+    return text, False
 
 
 def select_keyboard_interactively() -> str:
@@ -120,20 +102,9 @@ def _save_and_restart(keyboard_name: str):
     with open(_DROPIN_FILE, "w") as f:
         f.write(f'[Service]\nEnvironment="WHISPER_KEYBOARD={keyboard_name}"\n')
     print(f"Saved: WHISPER_KEYBOARD={keyboard_name!r}")
-
-    import subprocess as _sp
-    _sp.run(["systemctl", "--user", "daemon-reload"], check=True)
-    _sp.run(["systemctl", "--user", "restart", "whisper-transcribe.service"], check=True)
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "--user", "restart", "whisper-transcribe.service"], check=True)
     print("Service restarted.")
-
-
-def _cleanup(signum, frame):
-    logger.info("Shutting down (signal %d)", signum)
-    try:
-        recorder.stop()
-    except Exception as e:
-        logger.error("Error stopping recorder during cleanup: %s", e)
-    sys.exit(0)
 
 
 def main():
@@ -150,17 +121,73 @@ def main():
     )
     args = parser.parse_args()
 
-    signal.signal(signal.SIGTERM, _cleanup)
-    signal.signal(signal.SIGINT, _cleanup)
-
     if args.keyboard == "__select__":
         name = select_keyboard_interactively()
         _save_and_restart(name)
         sys.exit(0)
-    else:
-        device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
+
+    recorder    = AudioRecorder(output_path=AUDIO_PATH)
+    transcriber = Transcriber(binary=WHISPER_BIN, model=MODEL_PATH, language=LANGUAGE)
+    _recording  = False
+
+    def on_press():
+        nonlocal _recording
+        if _recording:
+            logger.warning("Button pressed while already recording, ignoring")
+            return
+        _recording = True
+        logger.info("Recording started")
+        recorder.start()
+
+    def on_release():
+        nonlocal _recording
+        if not _recording:
+            return
+        _recording = False
+        duration = recorder.stop()
+        logger.info("Recording stopped (%.2fs)", duration)
+        if duration < MIN_DURATION:
+            logger.info("Too short (%.2fs < %.2fs), discarded", duration, MIN_DURATION)
+            return
+
+        text = transcriber.transcribe(AUDIO_PATH)
+        if text is None:
+            logger.error("Transcription failed")
+            notify("Whisper", "Transcription failed", urgency="critical")
+            return
+        logger.info("Transcribed: %r", text)
+
+        natural = _extract_command(text)
+        if natural is not None:
+            logger.info("Command trigger: %r", natural)
+            if not run_command(natural):
+                notify("Whisper", "Command failed", urgency="critical")
+            return
+
+        text, send_return = _strip_enter_suffix(text)
+
+        if text and not type_text(text):
+            logger.error("Failed to type text")
+            notify("Whisper", "Failed to type text", urgency="critical")
+            return
+
+        if send_return:
+            press_return()
+
+    def _cleanup(signum, frame):
+        logger.info("Shutting down (signal %d)", signum)
+        try:
+            recorder.stop()
+        except Exception as e:
+            logger.error("Error stopping recorder during cleanup: %s", e)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
     if device is None:
-        logger.error("No keyboard device with Scroll Lock found.")
+        logger.error("No keyboard device found (filter=%r).", args.keyboard)
         logger.error(
             "Debug: python3 -c \"import evdev; "
             "[print(p, evdev.InputDevice(p).name) for p in evdev.list_devices()]\""
