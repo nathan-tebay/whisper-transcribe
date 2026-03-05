@@ -96,15 +96,61 @@ def select_keyboard_interactively() -> str:
         print(f"Enter a number between 0 and {len(keyboards) - 1}.")
 
 
-def _save_and_restart(keyboard_name: str):
-    """Persist keyboard choice as a systemd drop-in and restart the service."""
+_BACKEND_DROPIN_FILE = os.path.join(_DROPIN_DIR, "backend.conf")
+
+
+def _write_dropin(path: str, lines: list[str]):
     os.makedirs(_DROPIN_DIR, exist_ok=True)
-    with open(_DROPIN_FILE, "w") as f:
-        f.write(f'[Service]\nEnvironment="WHISPER_KEYBOARD={keyboard_name}"\n')
-    print(f"Saved: WHISPER_KEYBOARD={keyboard_name!r}")
+    with open(path, "w") as f:
+        f.write("[Service]\n")
+        for line in lines:
+            f.write(f"{line}\n")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "restart", "whisper-transcribe.service"], check=True)
     print("Service restarted.")
+
+
+def _save_and_restart(keyboard_name: str):
+    """Persist keyboard choice as a systemd drop-in and restart the service."""
+    _write_dropin(_DROPIN_FILE, [f'Environment="WHISPER_KEYBOARD={keyboard_name}"'])
+    print(f"Saved: WHISPER_KEYBOARD={keyboard_name!r}")
+
+
+def _select_backend_interactively() -> tuple[str, str | None]:
+    """Prompt user to select backend and optionally an Ollama model."""
+    backends = ["ollama", "claude"]
+    print("Available backends:")
+    for i, b in enumerate(backends):
+        print(f"  [{i}] {b}")
+    while True:
+        try:
+            choice = input("Select backend [0]: ").strip()
+            idx = int(choice) if choice else 0
+            if 0 <= idx < len(backends):
+                backend = backends[idx]
+                break
+        except (ValueError, EOFError):
+            pass
+        print(f"Enter 0 or 1.")
+
+    model = None
+    if backend == "ollama":
+        default_model = os.environ.get("WHISPER_OLLAMA_MODEL", "qwen2.5:7b")
+        try:
+            model = input(f"Ollama model [{default_model}]: ").strip() or default_model
+        except EOFError:
+            model = default_model
+
+    return backend, model
+
+
+def _save_backend_and_restart(backend: str, model: str | None):
+    """Persist backend/model as a systemd drop-in and restart the service."""
+    lines = [f'Environment="WHISPER_COMMAND_BACKEND={backend}"']
+    if model:
+        lines.append(f'Environment="WHISPER_OLLAMA_MODEL={model}"')
+    _write_dropin(_BACKEND_DROPIN_FILE, lines)
+    print(f"Saved: backend={backend!r}" + (f", model={model!r}" if model else ""))
 
 
 def main():
@@ -119,11 +165,29 @@ def main():
              "Omit the value to pick interactively. "
              "Overrides WHISPER_KEYBOARD env var. Default: %(default)r",
     )
+    parser.add_argument(
+        "-b", "--backend",
+        nargs="?",
+        const="__select__",
+        metavar="BACKEND",
+        help="Command backend: 'ollama' or 'claude'. "
+             "Omit the value to pick interactively. "
+             "Overrides WHISPER_COMMAND_BACKEND env var.",
+    )
     args = parser.parse_args()
 
     if args.keyboard == "__select__":
         name = select_keyboard_interactively()
         _save_and_restart(name)
+        sys.exit(0)
+
+    if args.backend is not None:
+        if args.backend == "__select__":
+            backend, model = _select_backend_interactively()
+        else:
+            backend = args.backend
+            model = None
+        _save_backend_and_restart(backend, model)
         sys.exit(0)
 
     recorder    = AudioRecorder(output_path=AUDIO_PATH)

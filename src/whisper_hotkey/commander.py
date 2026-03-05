@@ -1,10 +1,19 @@
-"""Natural-language command execution via Claude CLI."""
+"""Natural-language command execution via Claude CLI or local Ollama."""
+import json
 import logging
 import os
 import shlex
 import subprocess
+import urllib.error
+import urllib.request
 
 logger = logging.getLogger(__name__)
+
+# Backend selection: "ollama" (default) or "claude"
+BACKEND        = os.environ.get("WHISPER_COMMAND_BACKEND", "ollama")
+OLLAMA_MODEL   = os.environ.get("WHISPER_OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_URL     = "http://localhost:11434/api/generate"
+OLLAMA_TIMEOUT = 30  # seconds
 
 CLAUDE_CLI     = "claude"
 CLAUDE_TIMEOUT = 30  # seconds
@@ -37,15 +46,48 @@ _PROMPT_TEMPLATE = (
 )
 
 
-def ask_claude(natural_language: str) -> str | None:
-    """Call Claude CLI; return stripped single-line response or None on failure."""
-    prompt = _PROMPT_TEMPLATE.format(
+def _build_prompt(natural_language: str) -> str:
+    return _PROMPT_TEMPLATE.format(
         natural_language=natural_language,
         home=os.path.expanduser("~"),
     )
+
+
+def ask_ollama(natural_language: str) -> str | None:
+    """Send prompt to local Ollama; return single-line response or None on failure."""
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": _build_prompt(natural_language),
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        logger.error("Ollama request failed: %s", e)
+        return None
+    except TimeoutError:
+        logger.error("Ollama timed out after %ds", OLLAMA_TIMEOUT)
+        return None
+
+    response = data.get("response", "").strip()
+    if not response:
+        logger.error("Ollama returned empty response")
+        return None
+    # Take only the first line in case the model adds explanation
+    return response.splitlines()[0].strip()
+
+
+def ask_claude(natural_language: str) -> str | None:
+    """Call Claude CLI; return stripped single-line response or None on failure."""
     try:
         result = subprocess.run(
-            [CLAUDE_CLI, "--print", prompt],
+            [CLAUDE_CLI, "--print", _build_prompt(natural_language)],
             capture_output=True, text=True, timeout=CLAUDE_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -63,7 +105,7 @@ def ask_claude(natural_language: str) -> str | None:
     if not response:
         logger.error("Claude CLI returned empty response")
         return None
-    return response
+    return response.splitlines()[0].strip()
 
 
 def execute_command(response: str) -> bool:
@@ -93,13 +135,17 @@ def execute_command(response: str) -> bool:
             logger.error("Failed to launch terminal command %r: %s", cmd, e)
             return False
 
-    logger.error("Unexpected Claude response format: %r", response)
+    logger.error("Unexpected response format: %r", response)
     return False
 
 
 def run_command(natural_language: str) -> bool:
-    """Full pipeline: interpret with Claude, then execute. Returns True on success."""
-    response = ask_claude(natural_language)
+    """Full pipeline: interpret with selected backend, then execute."""
+    if BACKEND == "claude":
+        response = ask_claude(natural_language)
+    else:
+        response = ask_ollama(natural_language)
+
     if response is None:
         return False
     return execute_command(response)
