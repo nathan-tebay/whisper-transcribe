@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # ── Constants ────────────────────────────────────────────────────────────────
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WHISPER_BIN=/usr/local/bin/whisper-main
 WHISPER_ENTRY=/usr/local/bin/whisper-transcribe
 MODEL_DIR=/usr/local/share/whisper/models
@@ -215,7 +214,24 @@ EOF
     fi
 }
 
-step_done()              { true; }
+# ── Step 9: Done ──────────────────────────────────────────────────────────────
+step_done() {
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  Installation complete for: $TARGET_USER${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  NOTE: Log out and back in for the 'input' group to take effect."
+    echo ""
+    echo "  To start now (from $TARGET_USER's graphical session):"
+    echo "    systemctl --user start whisper-transcribe"
+    echo ""
+    echo "  To check logs:"
+    echo "    journalctl --user -u whisper-transcribe -f"
+    echo ""
+    echo "  Hold Scroll Lock to record. Release to transcribe."
+    echo ""
+}
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
