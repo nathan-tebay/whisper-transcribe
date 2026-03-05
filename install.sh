@@ -130,6 +130,8 @@ step_download_model() {
     mkdir -p "$MODEL_DIR"
     info "Downloading ggml-large-v3.bin (~3.1 GB)..."
     bash "$script" large-v3
+    [[ -f "$BUILD_TMP/models/ggml-large-v3.bin" ]] \
+        || error "Download failed: $BUILD_TMP/models/ggml-large-v3.bin not found"
     install -m 644 "$BUILD_TMP/models/ggml-large-v3.bin" "$MODEL_FILE"
     done_ "Model installed to $MODEL_FILE"
 }
