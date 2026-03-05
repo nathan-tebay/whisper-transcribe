@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ── Constants ────────────────────────────────────────────────────────────────
 WHISPER_BIN=/usr/local/bin/whisper-main
 WHISPER_ENTRY=/usr/local/bin/whisper-transcribe
@@ -134,18 +136,11 @@ step_download_model() {
     install -m 644 "$BUILD_TMP/models/ggml-large-v3.bin" "$MODEL_FILE"
     done_ "Model installed to $MODEL_FILE"
 }
-# ── Step 6: Install entry point ───────────────────────────────────────────────
+# ── Step 6: Install Python package ───────────────────────────────────────────
 step_install_entry_point() {
-    info "Writing $WHISPER_ENTRY ..."
-    cat > "$WHISPER_ENTRY" <<'PYEOF'
-#!/usr/bin/env python3
-import sys
-sys.path.insert(0, '/mnt/LargeNVMe/Projects/GitHub/AIIntegrations')
-from src.whisper_hotkey.daemon import main
-main()
-PYEOF
-    chmod 755 "$WHISPER_ENTRY"
-    done_ "Entry point installed at $WHISPER_ENTRY"
+    info "Installing whisper-transcribe Python package..."
+    pip3 install --break-system-packages "$SCRIPT_DIR"
+    done_ "Package installed; entry point at $WHISPER_ENTRY"
 }
 # ── Step 7: Input group ───────────────────────────────────────────────────────
 step_input_group() {
