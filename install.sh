@@ -135,7 +135,19 @@ step_download_model() {
     install -m 644 "$BUILD_TMP/models/ggml-large-v3.bin" "$MODEL_FILE"
     done_ "Model installed to $MODEL_FILE"
 }
-step_install_entry_point() { true; }
+# ── Step 6: Install entry point ───────────────────────────────────────────────
+step_install_entry_point() {
+    info "Writing $WHISPER_ENTRY ..."
+    cat > "$WHISPER_ENTRY" <<'PYEOF'
+#!/usr/bin/env python3
+import sys
+sys.path.insert(0, '/mnt/LargeNVMe/Projects/GitHub/AIIntegrations')
+from src.whisper_hotkey.daemon import main
+main()
+PYEOF
+    chmod 755 "$WHISPER_ENTRY"
+    done_ "Entry point installed at $WHISPER_ENTRY"
+}
 step_input_group()       { true; }
 step_systemd_service()   { true; }
 step_done()              { true; }
