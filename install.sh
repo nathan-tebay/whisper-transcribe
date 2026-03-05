@@ -64,7 +64,7 @@ step_system_deps() {
         cmake \
         gcc-c++ \
         vulkan-devel \
-        shaderc \
+        glslc \
         ydotool \
         libnotify \
         pipewire-utils \
@@ -98,6 +98,7 @@ step_build_whisper() {
     info "Building with Vulkan backend (this takes 5-10 minutes)..."
     cmake -B "$BUILD_TMP/build" "$BUILD_TMP" \
         -DGGML_VULKAN=ON \
+        -DBUILD_SHARED_LIBS=OFF \
         -DCMAKE_BUILD_TYPE=Release
     cmake --build "$BUILD_TMP/build" --config Release -j"$(nproc)"
 
@@ -166,7 +167,8 @@ step_systemd_service() {
     cat > "$service_file" <<EOF
 [Unit]
 Description=Whisper hotkey transcription daemon
-After=graphical-session.target
+After=graphical-session.target ydotool.service
+Requires=ydotool.service
 StartLimitInterval=60
 StartLimitBurst=3
 
@@ -182,6 +184,22 @@ WantedBy=graphical-session.target
 EOF
     chown "$TARGET_USER:$TARGET_USER" "$service_file"
 
+    local ydotool_file="$service_dir/ydotool.service"
+    cat > "$ydotool_file" <<'EOF'
+[Unit]
+Description=ydotoold input daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/ydotoold
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+    chown "$TARGET_USER:$TARGET_USER" "$ydotool_file"
+
     # Enable via the user's running session bus if available, else leave a note
     local uid
     uid=$(id -u "$TARGET_USER")
@@ -196,15 +214,16 @@ EOF
         sudo -u "$TARGET_USER" \
             XDG_RUNTIME_DIR="$xdg_runtime" \
             DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
-            systemctl --user enable whisper-transcribe
-        done_ "Service enabled for $TARGET_USER."
+            systemctl --user enable ydotool whisper-transcribe
+        done_ "Services enabled for $TARGET_USER."
     else
         # User not logged in — enable via symlink manually
         local wants_dir="$service_dir/graphical-session.target.wants"
         mkdir -p "$wants_dir"
-        ln -sf "$service_file" "$wants_dir/whisper-transcribe.service"
+        ln -sf "$ydotool_file"   "$wants_dir/ydotool.service"
+        ln -sf "$service_file"   "$wants_dir/whisper-transcribe.service"
         chown -R "$TARGET_USER:$TARGET_USER" "$wants_dir"
-        done_ "Service installed for $TARGET_USER (will auto-enable on next login)."
+        done_ "Services installed for $TARGET_USER (will auto-enable on next login)."
     fi
 }
 

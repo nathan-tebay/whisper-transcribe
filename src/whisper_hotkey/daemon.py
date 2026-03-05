@@ -71,16 +71,19 @@ def on_release():
         notify("Whisper", "Failed to type text", urgency="critical")
 
 
-def select_keyboard_interactively() -> evdev.InputDevice:
-    """List keyboard-capable devices and prompt the user to pick one."""
+_DROPIN_DIR  = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
+_DROPIN_FILE = os.path.join(_DROPIN_DIR, "keyboard.conf")
+
+
+def select_keyboard_interactively() -> str:
+    """List keyboard-capable devices, prompt the user, return the chosen name."""
     keyboards = []
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
             if evdev.ecodes.EV_KEY in dev.capabilities():
-                keyboards.append(dev)
-            else:
-                dev.close()
+                keyboards.append((path, dev.name))
+            dev.close()
         except (PermissionError, OSError):
             continue
 
@@ -89,22 +92,31 @@ def select_keyboard_interactively() -> evdev.InputDevice:
         sys.exit(1)
 
     print("Available keyboards:")
-    for i, dev in enumerate(keyboards):
-        print(f"  [{i}] {dev.path}  {dev.name}")
+    for i, (path, name) in enumerate(keyboards):
+        print(f"  [{i}] {path}  {name}")
 
     while True:
         try:
             choice = input("Select keyboard [0]: ").strip()
             idx = int(choice) if choice else 0
             if 0 <= idx < len(keyboards):
-                selected = keyboards[idx]
-                for dev in keyboards:
-                    if dev is not selected:
-                        dev.close()
-                return selected
+                return keyboards[idx][1]
         except (ValueError, EOFError):
             pass
         print(f"Enter a number between 0 and {len(keyboards) - 1}.")
+
+
+def _save_and_restart(keyboard_name: str):
+    """Persist keyboard choice as a systemd drop-in and restart the service."""
+    os.makedirs(_DROPIN_DIR, exist_ok=True)
+    with open(_DROPIN_FILE, "w") as f:
+        f.write(f'[Service]\nEnvironment="WHISPER_KEYBOARD={keyboard_name}"\n')
+    print(f"Saved: WHISPER_KEYBOARD={keyboard_name!r}")
+
+    import subprocess as _sp
+    _sp.run(["systemctl", "--user", "daemon-reload"], check=True)
+    _sp.run(["systemctl", "--user", "restart", "whisper-transcribe.service"], check=True)
+    print("Service restarted.")
 
 
 def _cleanup(signum, frame):
@@ -134,7 +146,9 @@ def main():
     signal.signal(signal.SIGINT, _cleanup)
 
     if args.keyboard == "__select__":
-        device = select_keyboard_interactively()
+        name = select_keyboard_interactively()
+        _save_and_restart(name)
+        sys.exit(0)
     else:
         device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
     if device is None:

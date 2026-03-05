@@ -47,7 +47,18 @@ class KeyWatcher:
         try:
             self.device.grab()
         except OSError as e:
-            raise OSError(f"Failed to grab device {self.device.path}: {e}") from e
+            import subprocess
+            try:
+                pids = subprocess.check_output(
+                    ["fuser", self.device.path], stderr=subprocess.DEVNULL
+                ).decode().split()
+                holders = ", ".join(pids)
+            except Exception:
+                holders = "unknown"
+            raise OSError(
+                f"Failed to grab {self.device.path}: device busy (held by PID {holders}). "
+                "Stop any other whisper-transcribe instance first."
+            ) from e
         try:
             for event in self.device.read_loop():
                 self.handle_event(event)
