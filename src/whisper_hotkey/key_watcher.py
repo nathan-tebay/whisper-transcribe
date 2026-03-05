@@ -8,13 +8,23 @@ from evdev import ecodes
 logger = logging.getLogger(__name__)
 
 
+def _sorted_devices() -> list[str]:
+    """Return event device paths sorted by event number ascending.
+
+    Lower event numbers represent primary hardware interfaces; higher numbers
+    are typically duplicate/virtual nodes for the same physical device.
+    """
+    paths = evdev.list_devices()
+    return sorted(paths, key=lambda p: int(p.rsplit("event", 1)[-1]))
+
+
 def find_keyboard_device(keycodes: list[int], name_filter: str = ""):
     """Return the first InputDevice that has any of the given keycodes, or None.
 
     If name_filter is set, only devices whose name contains that string
     (case-insensitive) are considered.
     """
-    for path in evdev.list_devices():
+    for path in _sorted_devices():
         try:
             dev = evdev.InputDevice(path)
             if name_filter and name_filter.lower() not in dev.name.lower():

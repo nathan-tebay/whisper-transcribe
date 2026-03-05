@@ -42,11 +42,14 @@ def _is_running() -> bool:
 def _list_keyboards():
     import evdev
     keyboards = []
-    for path in evdev.list_devices():
+    seen_names = set()
+    paths = sorted(evdev.list_devices(), key=lambda p: int(p.rsplit("event", 1)[-1]))
+    for path in paths:
         try:
             dev = evdev.InputDevice(path)
-            if evdev.ecodes.EV_KEY in dev.capabilities():
+            if evdev.ecodes.EV_KEY in dev.capabilities() and dev.name not in seen_names:
                 keyboards.append((path, dev.name))
+                seen_names.add(dev.name)
             dev.close()
         except (PermissionError, OSError):
             continue
