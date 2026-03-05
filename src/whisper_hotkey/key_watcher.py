@@ -3,11 +3,18 @@ import evdev
 from evdev import ecodes
 
 
-def find_keyboard_device(keycode: int = ecodes.KEY_SCROLLLOCK):
-    """Return the first InputDevice that has the given keycode, or None."""
+def find_keyboard_device(keycode: int = ecodes.KEY_SCROLLLOCK, name_filter: str = ""):
+    """Return the first InputDevice that has the given keycode, or None.
+
+    If name_filter is set, only devices whose name contains that string
+    (case-insensitive) are considered.
+    """
     for path in evdev.list_devices():
         try:
             dev = evdev.InputDevice(path)
+            if name_filter and name_filter.lower() not in dev.name.lower():
+                dev.close()
+                continue
             caps = dev.capabilities()
             if keycode in caps.get(ecodes.EV_KEY, []):
                 return dev

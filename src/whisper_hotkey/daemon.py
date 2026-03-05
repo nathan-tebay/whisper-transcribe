@@ -1,4 +1,5 @@
 """Main daemon: coordinates key watching, recording, transcription, and typing."""
+import argparse
 import logging
 import os
 import signal
@@ -20,7 +21,8 @@ logger = logging.getLogger(__name__)
 MODEL_PATH   = "/usr/local/share/whisper/models/ggml-large-v3.bin"
 WHISPER_BIN  = "/usr/local/bin/whisper-main"
 AUDIO_PATH   = "/tmp/whisper-in.wav"
-HOTKEY       = evdev.ecodes.KEY_SCROLLLOCK
+HOTKEY                  = evdev.ecodes.KEY_SCROLLLOCK
+DEFAULT_KEYBOARD_FILTER = "Arduino"
 MIN_DURATION = 0.5   # seconds; shorter recordings discarded
 RUN_COMMAND_PREFIX = "run command"
 LANGUAGE     = "en"
@@ -79,10 +81,19 @@ def _cleanup(signum, frame):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Whisper hotkey transcription daemon")
+    parser.add_argument(
+        "-k", "--keyboard",
+        default=os.environ.get("WHISPER_KEYBOARD", DEFAULT_KEYBOARD_FILTER),
+        help="Device name filter (substring match, case-insensitive). "
+             "Overrides WHISPER_KEYBOARD env var. Default: %(default)r",
+    )
+    args = parser.parse_args()
+
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT, _cleanup)
 
-    device = find_keyboard_device(HOTKEY)
+    device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
     if device is None:
         logger.error("No keyboard device with Scroll Lock found.")
         logger.error(
