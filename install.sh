@@ -19,13 +19,15 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 FORCE_REBUILD=0
+UNINSTALL=0
 TARGET_USER=""
 
 usage() {
-    echo "Usage: sudo $0 USERNAME [--force-rebuild]"
+    echo "Usage: sudo $0 USERNAME [--force-rebuild] [--uninstall]"
     echo ""
     echo "  USERNAME        The local user to set up whisper-transcribe for."
     echo "  --force-rebuild Re-clone and recompile whisper.cpp even if already built."
+    echo "  --uninstall     Remove all installed components for USERNAME."
     exit 1
 }
 
@@ -34,6 +36,7 @@ usage() {
 for arg in "$@"; do
     case "$arg" in
         --force-rebuild) FORCE_REBUILD=1 ;;
+        --uninstall)     UNINSTALL=1 ;;
         --help|-h)       usage ;;
         -*)              error "Unknown flag: $arg" ;;
         *)               TARGET_USER="$arg" ;;
@@ -246,8 +249,61 @@ step_done() {
     echo ""
 }
 
+# ── Uninstall ─────────────────────────────────────────────────────────────────
+step_uninstall() {
+    local home_dir
+    home_dir="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    local service_dir="$home_dir/.config/systemd/user"
+    local uid
+    uid=$(id -u "$TARGET_USER")
+    local xdg_runtime="/run/user/$uid"
+    local bus_addr="unix:path=$xdg_runtime/bus"
+
+    info "Stopping and disabling services..."
+    if [[ -S "$xdg_runtime/bus" ]]; then
+        sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            systemctl --user disable --now whisper-transcribe ydotool 2>/dev/null || true
+        sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            systemctl --user daemon-reload
+    fi
+
+    info "Removing service files..."
+    rm -f  "$service_dir/whisper-transcribe.service"
+    rm -f  "$service_dir/ydotool.service"
+    rm -rf "$service_dir/whisper-transcribe.service.d"
+    rm -f  "$service_dir/graphical-session.target.wants/whisper-transcribe.service"
+    rm -f  "$service_dir/graphical-session.target.wants/ydotool.service"
+
+    info "Uninstalling Python package..."
+    pip3 uninstall --break-system-packages -y whisper-transcribe 2>/dev/null || true
+
+    info "Removing whisper-main binary..."
+    rm -f "$WHISPER_BIN"
+
+    echo ""
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  Uninstall complete for: $TARGET_USER${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "  The following were NOT removed (shared or large):"
+    echo "    $MODEL_FILE  (~3.1 GB — delete manually if no longer needed)"
+    echo "    $TARGET_USER's membership in the 'input' group"
+    echo ""
+}
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
+    if [[ $UNINSTALL -eq 1 ]]; then
+        [[ $EUID -ne 0 ]] && error "Run as root: sudo $0 $TARGET_USER --uninstall"
+        id "$TARGET_USER" &>/dev/null || error "User '$TARGET_USER' does not exist."
+        step_uninstall
+        return
+    fi
+
     step_validate
     step_system_deps
     step_python_deps

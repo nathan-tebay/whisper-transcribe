@@ -1,5 +1,6 @@
 """Natural-language command execution via Claude CLI."""
 import logging
+import os
 import shlex
 import subprocess
 
@@ -14,14 +15,34 @@ _PROMPT_TEMPLATE = (
     "  GUI: <command>       (for apps that open a window and run in background)\n"
     "  TERMINAL: <command>  (for commands that produce output needing a terminal)\n"
     "Do not explain. Do not add punctuation after the command.\n"
-    'Context: the whisper transcription daemon systemd service is named "whisper-transcribe".\n'
+    "\n"
+    "Rules:\n"
+    "- To open a website, use: GUI: xdg-open https://...\n"
+    "- To open a file manager at a path, pass the path as an argument e.g.: GUI: dolphin /some/path\n"
+    "- To open a file or folder, use: GUI: xdg-open <path>\n"
+    "- Use full paths, never ~ (expand to the actual home directory)\n"
+    "\n"
+    "Context:\n"
+    "  User home directory: {home}\n"
+    '  The whisper transcription daemon systemd service is named "whisper-transcribe".\n'
+    "\n"
+    "Examples:\n"
+    '  "open dolphin in my home directory"  -> GUI: dolphin {home}\n'
+    '  "open dolphin in downloads"          -> GUI: dolphin {home}/Downloads\n'
+    '  "open linkedin"                      -> GUI: xdg-open https://www.linkedin.com\n'
+    '  "open github"                        -> GUI: xdg-open https://www.github.com\n'
+    '  "show disk usage"                    -> TERMINAL: df -h\n'
+    "\n"
     "Command: {natural_language}"
 )
 
 
 def ask_claude(natural_language: str) -> str | None:
     """Call Claude CLI; return stripped single-line response or None on failure."""
-    prompt = _PROMPT_TEMPLATE.format(natural_language=natural_language)
+    prompt = _PROMPT_TEMPLATE.format(
+        natural_language=natural_language,
+        home=os.path.expanduser("~"),
+    )
     try:
         result = subprocess.run(
             [CLAUDE_CLI, "--print", prompt],

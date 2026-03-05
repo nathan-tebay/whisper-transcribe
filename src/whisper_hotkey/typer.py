@@ -24,3 +24,24 @@ def type_text(text: str, timeout: int = 5) -> bool:
     except OSError as e:
         logger.error("Failed to invoke ydotool: %s", e)
         return False
+
+
+def press_return(timeout: int = 5) -> bool:
+    """Send a Return keypress. Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["ydotool", "key", "28"],  # 28 = KEY_ENTER
+            capture_output=True,
+            timeout=timeout,
+        )
+        if result.returncode == 0:
+            return True
+        logger.error("ydotool key failed (exit %d): %s", result.returncode,
+                     result.stderr.decode(errors="replace"))
+        return False
+    except subprocess.TimeoutExpired:
+        logger.error("ydotool timed out after %ds", timeout)
+        return False
+    except OSError as e:
+        logger.error("Failed to invoke ydotool: %s", e)
+        return False

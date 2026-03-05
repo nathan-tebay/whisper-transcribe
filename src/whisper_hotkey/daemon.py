@@ -11,7 +11,7 @@ import evdev
 from .key_watcher import KeyWatcher, find_keyboard_device
 from .recorder import AudioRecorder
 from .transcriber import Transcriber
-from .typer import type_text
+from .typer import type_text, press_return
 from .commander import run_command
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -24,7 +24,7 @@ AUDIO_PATH   = "/tmp/whisper-in.wav"
 HOTKEY                  = evdev.ecodes.KEY_SCROLLLOCK
 DEFAULT_KEYBOARD_FILTER = "Arduino"
 MIN_DURATION = 0.5   # seconds; shorter recordings discarded
-RUN_COMMAND_PREFIX = "run command"
+RUN_COMMAND_PREFIX = "command"
 LANGUAGE     = "en"
 
 recorder    = AudioRecorder(output_path=AUDIO_PATH)
@@ -41,7 +41,6 @@ def notify(summary: str, body: str = "", urgency: str = "normal"):
 def on_press():
     logger.info("Recording started")
     recorder.start()
-    notify("Whisper", "Recording…")
 
 
 def on_release():
@@ -49,26 +48,35 @@ def on_release():
     logger.info("Recording stopped (%.2fs)", duration)
     if duration < MIN_DURATION:
         logger.info("Too short (%.2fs < %.2fs), discarded", duration, MIN_DURATION)
-        notify("Whisper", "Too short, discarded", urgency="low")
         return
-    notify("Whisper", "Transcribing…")
     text = transcriber.transcribe(AUDIO_PATH)
     if text is None:
         logger.error("Transcription failed")
         notify("Whisper", "Transcription failed", urgency="critical")
         return
     logger.info("Transcribed: %r", text)
-    if text.lower().startswith(RUN_COMMAND_PREFIX + " "):
-        natural = text[len(RUN_COMMAND_PREFIX):].strip()
+    if text.lower().startswith(RUN_COMMAND_PREFIX):
+        natural = text[len(RUN_COMMAND_PREFIX):].lstrip(' \t,.:;!?')
         logger.info("Run-command trigger: %r", natural)
-        notify("Whisper", f"Running: {natural}…")
         if not run_command(natural):
             notify("Whisper", "Command failed", urgency="critical")
         return
 
+    # Strip trailing punctuation then check for "enter" suffix
+    stripped = text.rstrip(' \t,.:;!?')
+    if stripped.lower().endswith(" enter"):
+        text = stripped[:-len(" enter")]
+        send_return = True
+    else:
+        send_return = False
+
     if not type_text(text):
         logger.error("Failed to type text")
         notify("Whisper", "Failed to type text", urgency="critical")
+        return
+
+    if send_return:
+        press_return()
 
 
 _DROPIN_DIR  = os.path.expanduser("~/.config/systemd/user/whisper-transcribe.service.d")
