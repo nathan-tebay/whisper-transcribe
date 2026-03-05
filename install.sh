@@ -148,8 +148,73 @@ PYEOF
     chmod 755 "$WHISPER_ENTRY"
     done_ "Entry point installed at $WHISPER_ENTRY"
 }
-step_input_group()       { true; }
-step_systemd_service()   { true; }
+# ── Step 7: Input group ───────────────────────────────────────────────────────
+step_input_group() {
+    if id -nG "$TARGET_USER" | grep -qw input; then
+        skip "$TARGET_USER is already in the 'input' group."
+    else
+        info "Adding $TARGET_USER to 'input' group..."
+        usermod -aG input "$TARGET_USER"
+        done_ "$TARGET_USER added to 'input' group."
+    fi
+}
+
+# ── Step 8: systemd user service ──────────────────────────────────────────────
+step_systemd_service() {
+    local service_dir
+    service_dir="$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config/systemd/user"
+    local service_file="$service_dir/whisper-transcribe.service"
+
+    info "Installing systemd user service for $TARGET_USER ..."
+    mkdir -p "$service_dir"
+    chown "$TARGET_USER:$TARGET_USER" "$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config"
+    chown -R "$TARGET_USER:$TARGET_USER" "$service_dir"
+
+    cat > "$service_file" <<EOF
+[Unit]
+Description=Whisper hotkey transcription daemon
+After=graphical-session.target
+
+[Service]
+ExecStart=$WHISPER_ENTRY
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+SyslogIdentifier=whisper-transcribe
+TimeoutStopSec=5
+
+[Install]
+WantedBy=graphical-session.target
+EOF
+    chown "$TARGET_USER:$TARGET_USER" "$service_file"
+
+    # Enable via the user's running session bus if available, else leave a note
+    local uid
+    uid=$(id -u "$TARGET_USER")
+    local xdg_runtime="/run/user/$uid"
+    local bus_addr="unix:path=$xdg_runtime/bus"
+
+    if [[ -S "$xdg_runtime/bus" ]]; then
+        sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            systemctl --user daemon-reload
+        sudo -u "$TARGET_USER" \
+            XDG_RUNTIME_DIR="$xdg_runtime" \
+            DBUS_SESSION_BUS_ADDRESS="$bus_addr" \
+            systemctl --user enable whisper-transcribe
+        done_ "Service enabled for $TARGET_USER."
+    else
+        # User not logged in — enable via symlink manually
+        local wants_dir="$service_dir/graphical-session.target.wants"
+        mkdir -p "$wants_dir"
+        ln -sf "$service_file" "$wants_dir/whisper-transcribe.service"
+        chown -R "$TARGET_USER:$TARGET_USER" "$wants_dir"
+        done_ "Service installed for $TARGET_USER (will auto-enable on next login)."
+    fi
+}
+
 step_done()              { true; }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
