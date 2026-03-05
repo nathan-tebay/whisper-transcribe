@@ -19,28 +19,47 @@ CLAUDE_CLI     = "claude"
 CLAUDE_TIMEOUT = 30  # seconds
 
 _PROMPT_TEMPLATE = (
-    "Convert the following spoken command to a shell command for KDE Plasma on Fedora Linux.\n"
-    "Reply with EXACTLY ONE LINE in one of these two formats:\n"
-    "  GUI: <command>       (for apps that open a window and run in background)\n"
-    "  TERMINAL: <command>  (for commands that produce output needing a terminal)\n"
-    "Do not explain. Do not add punctuation after the command.\n"
+    "Convert the following spoken command into one of the response formats below.\n"
+    "Reply with EXACTLY ONE LINE. Do not explain.\n"
     "\n"
-    "Rules:\n"
-    "- To open a website, use: GUI: xdg-open https://...\n"
-    "- To open a file manager at a path, pass the path as an argument e.g.: GUI: dolphin /some/path\n"
-    "- To open a file or folder, use: GUI: xdg-open <path>\n"
-    "- Use full paths, never ~ (expand to the actual home directory)\n"
+    "Formats:\n"
+    "  GUI: <command>            (open an app or URL in the background)\n"
+    "  TERMINAL: <command>       (run a shell command in a terminal window)\n"
+    "  KEYS: <ydotool-sequence>  (send keystrokes; use keycode:1 keycode:0 pairs)\n"
+    "\n"
+    "KEYS format rules:\n"
+    "  - Each key event is keycode:1 (press) followed by keycode:0 (release)\n"
+    "  - Hold modifiers by pressing before and releasing after: 29:1 30:1 30:0 29:0 = Ctrl+A\n"
+    "  - Repeat keys by repeating the press/release pair\n"
+    "  - Common keycodes: backspace=14, tab=15, enter=28, esc=1, delete=111,\n"
+    "    space=57, home=102, end=107, pgup=104, pgdn=109,\n"
+    "    left=105, right=106, up=103, down=108,\n"
+    "    ctrl=29, shift=42, alt=56\n"
+    "  - Ctrl+Z=undo, Ctrl+Y=redo, Ctrl+A=select all, Ctrl+C=copy, Ctrl+V=paste,\n"
+    "    Ctrl+X=cut, Ctrl+Backspace=delete word, Shift+Home=select to line start,\n"
+    "    Shift+End=select to line end\n"
+    "\n"
+    "GUI/TERMINAL rules:\n"
+    "  - To open a website: GUI: xdg-open https://...\n"
+    "  - To open a file manager at a path: GUI: dolphin /some/path\n"
+    "  - Use full paths, never ~\n"
     "\n"
     "Context:\n"
     "  User home directory: {home}\n"
-    '  The whisper transcription daemon systemd service is named "whisper-transcribe".\n'
+    '  Systemd service name: "whisper-transcribe"\n'
     "\n"
     "Examples:\n"
-    '  "open dolphin in my home directory"  -> GUI: dolphin {home}\n'
-    '  "open dolphin in downloads"          -> GUI: dolphin {home}/Downloads\n'
-    '  "open linkedin"                      -> GUI: xdg-open https://www.linkedin.com\n'
-    '  "open github"                        -> GUI: xdg-open https://www.github.com\n'
-    '  "show disk usage"                    -> TERMINAL: df -h\n'
+    '  "open linkedin"                   -> GUI: xdg-open https://www.linkedin.com\n'
+    '  "open dolphin in downloads"       -> GUI: dolphin {home}/Downloads\n'
+    '  "show disk usage"                 -> TERMINAL: df -h\n'
+    '  "backspace"                       -> KEYS: 14:1 14:0\n'
+    '  "backspace five times"            -> KEYS: 14:1 14:0 14:1 14:0 14:1 14:0 14:1 14:0 14:1 14:0\n'
+    '  "tab three times"                 -> KEYS: 15:1 15:0 15:1 15:0 15:1 15:0\n'
+    '  "select all"                      -> KEYS: 29:1 30:1 30:0 29:0\n'
+    '  "undo"                            -> KEYS: 29:1 44:1 44:0 29:0\n'
+    '  "delete last word"                -> KEYS: 29:1 14:1 14:0 29:0\n'
+    '  "select to start of line"         -> KEYS: 42:1 102:1 102:0 42:0\n'
+    '  "delete to start of line"         -> KEYS: 42:1 102:1 102:0 42:0 14:1 14:0\n'
     "\n"
     "Command: {natural_language}"
 )
@@ -134,6 +153,12 @@ def execute_command(response: str) -> bool:
         except OSError as e:
             logger.error("Failed to launch terminal command %r: %s", cmd, e)
             return False
+
+    if response.upper().startswith("KEYS:"):
+        from .typer import press_keys
+        sequence = response[5:].strip()
+        logger.info("Sending key sequence: %r", sequence)
+        return press_keys(sequence)
 
     logger.error("Unexpected response format: %r", response)
     return False

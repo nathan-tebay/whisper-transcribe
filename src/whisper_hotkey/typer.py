@@ -35,3 +35,8 @@ def type_text(text: str, timeout: int = 5) -> bool:
 def press_return(timeout: int = 5) -> bool:
     """Send a Return keypress. Returns True on success."""
     return _run_ydotool("key", "--key-delay", "50", "28:1", "28:0", timeout=timeout)
+
+
+def press_keys(sequence: str, timeout: int = 10) -> bool:
+    """Send an arbitrary ydotool key sequence (e.g. '29:1 30:1 30:0 29:0'). Returns True on success."""
+    return _run_ydotool("key", "--key-delay", "50", *sequence.split(), timeout=timeout)
