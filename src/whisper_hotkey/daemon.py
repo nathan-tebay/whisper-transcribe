@@ -71,6 +71,42 @@ def on_release():
         notify("Whisper", "Failed to type text", urgency="critical")
 
 
+def select_keyboard_interactively() -> evdev.InputDevice:
+    """List keyboard-capable devices and prompt the user to pick one."""
+    keyboards = []
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+            if evdev.ecodes.EV_KEY in dev.capabilities():
+                keyboards.append(dev)
+            else:
+                dev.close()
+        except (PermissionError, OSError):
+            continue
+
+    if not keyboards:
+        print("No keyboard devices found.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Available keyboards:")
+    for i, dev in enumerate(keyboards):
+        print(f"  [{i}] {dev.path}  {dev.name}")
+
+    while True:
+        try:
+            choice = input("Select keyboard [0]: ").strip()
+            idx = int(choice) if choice else 0
+            if 0 <= idx < len(keyboards):
+                selected = keyboards[idx]
+                for dev in keyboards:
+                    if dev is not selected:
+                        dev.close()
+                return selected
+        except (ValueError, EOFError):
+            pass
+        print(f"Enter a number between 0 and {len(keyboards) - 1}.")
+
+
 def _cleanup(signum, frame):
     logger.info("Shutting down (signal %d)", signum)
     try:
@@ -84,8 +120,12 @@ def main():
     parser = argparse.ArgumentParser(description="Whisper hotkey transcription daemon")
     parser.add_argument(
         "-k", "--keyboard",
+        nargs="?",
+        const="__select__",
         default=os.environ.get("WHISPER_KEYBOARD", DEFAULT_KEYBOARD_FILTER),
+        metavar="FILTER",
         help="Device name filter (substring match, case-insensitive). "
+             "Omit the value to pick interactively. "
              "Overrides WHISPER_KEYBOARD env var. Default: %(default)r",
     )
     args = parser.parse_args()
@@ -93,7 +133,10 @@ def main():
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT, _cleanup)
 
-    device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
+    if args.keyboard == "__select__":
+        device = select_keyboard_interactively()
+    else:
+        device = find_keyboard_device(HOTKEY, name_filter=args.keyboard)
     if device is None:
         logger.error("No keyboard device with Scroll Lock found.")
         logger.error(
