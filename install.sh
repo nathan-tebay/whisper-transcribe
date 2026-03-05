@@ -71,6 +71,7 @@ step_system_deps() {
         ydotool \
         libnotify \
         pipewire-utils \
+        python3-gobject \
         git
     done_ "System dependencies installed."
 }
