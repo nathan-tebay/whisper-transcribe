@@ -11,6 +11,7 @@ from .key_watcher import KeyWatcher, find_keyboard_device
 from .recorder import AudioRecorder
 from .transcriber import Transcriber
 from .typer import type_text
+from .commander import run_command
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ WHISPER_BIN  = "/usr/local/bin/whisper-main"
 AUDIO_PATH   = "/tmp/whisper-in.wav"
 HOTKEY       = evdev.ecodes.KEY_SCROLLLOCK
 MIN_DURATION = 0.5   # seconds; shorter recordings discarded
+RUN_COMMAND_PREFIX = "run command"
 LANGUAGE     = "en"
 
 recorder    = AudioRecorder(output_path=AUDIO_PATH)
@@ -54,6 +56,14 @@ def on_release():
         notify("Whisper", "Transcription failed", urgency="critical")
         return
     logger.info("Transcribed: %r", text)
+    if text.lower().startswith(RUN_COMMAND_PREFIX + " "):
+        natural = text[len(RUN_COMMAND_PREFIX):].strip()
+        logger.info("Run-command trigger: %r", natural)
+        notify("Whisper", f"Running: {natural}…")
+        if not run_command(natural):
+            notify("Whisper", "Command failed", urgency="critical")
+        return
+
     if not type_text(text):
         logger.error("Failed to type text")
         notify("Whisper", "Failed to type text", urgency="critical")
