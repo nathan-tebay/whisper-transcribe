@@ -174,13 +174,13 @@ step_systemd_service() {
 [Unit]
 Description=Whisper hotkey transcription daemon
 After=graphical-session.target
+StartLimitInterval=60
+StartLimitBurst=3
 
 [Service]
 ExecStart=$WHISPER_ENTRY
 Restart=on-failure
 RestartSec=5
-StartLimitInterval=60
-StartLimitBurst=3
 SyslogIdentifier=whisper-transcribe
 TimeoutStopSec=5
 
