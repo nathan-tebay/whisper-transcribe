@@ -230,7 +230,29 @@ EOF
     fi
 }
 
-# ── Step 9: Done ──────────────────────────────────────────────────────────────
+# ── Step 9: Tray autostart ────────────────────────────────────────────────────
+step_tray_autostart() {
+    local home_dir
+    home_dir="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+    local autostart_dir="$home_dir/.config/autostart"
+    local desktop_file="$autostart_dir/whisper-transcribe-tray.desktop"
+
+    info "Installing tray autostart entry..."
+    mkdir -p "$autostart_dir"
+    cat > "$desktop_file" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Whisper Transcribe Tray
+Exec=whisper-transcribe-tray
+Icon=audio-input-microphone
+Comment=System tray control for whisper-transcribe
+X-KDE-autostart-phase=2
+EOF
+    chown "$TARGET_USER:$TARGET_USER" "$desktop_file"
+    done_ "Tray autostart installed at $desktop_file"
+}
+
+# ── Step 10: Done ──────────────────────────────────────────────────────────────
 step_done() {
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -284,6 +306,9 @@ step_uninstall() {
     info "Removing whisper-main binary..."
     rm -f "$WHISPER_BIN"
 
+    info "Removing tray autostart..."
+    rm -f "$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config/autostart/whisper-transcribe-tray.desktop"
+
     echo ""
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${GREEN}  Uninstall complete for: $TARGET_USER${NC}"
@@ -312,6 +337,7 @@ main() {
     step_install_entry_point
     step_input_group
     step_systemd_service
+    step_tray_autostart
     step_done
 }
 

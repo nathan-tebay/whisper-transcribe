@@ -6,10 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "whisper-transcribe"
 version = "0.1.0"
 requires-python = ">=3.9"
-dependencies = ["evdev"]
+dependencies = ["evdev", "PyQt6"]
 
 [project.scripts]
-whisper-transcribe = "whisper_hotkey.daemon:main"
+whisper-transcribe      = "whisper_hotkey.daemon:main"
+whisper-transcribe-tray = "whisper_hotkey.tray:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
