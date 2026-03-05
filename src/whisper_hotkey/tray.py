@@ -39,22 +39,6 @@ def _is_running() -> bool:
     return _systemctl("is-active", SERVICE).stdout.strip() == "active"
 
 
-def _list_keyboards():
-    import evdev
-    keyboards = []
-    seen_names = set()
-    paths = sorted(evdev.list_devices(), key=lambda p: int(p.rsplit("event", 1)[-1]))
-    for path in paths:
-        try:
-            dev = evdev.InputDevice(path)
-            if evdev.ecodes.EV_KEY in dev.capabilities() and dev.name not in seen_names:
-                keyboards.append((path, dev.name))
-                seen_names.add(dev.name)
-            dev.close()
-        except (PermissionError, OSError):
-            continue
-    return keyboards
-
 
 def _get_ollama_models(generate_url: str) -> list[str]:
     """Query the local Ollama instance for downloaded model names."""
@@ -191,21 +175,6 @@ class SettingsDialog(Gtk.Dialog):
         cfg = _config.load()
         row = 0
 
-        # Keyboard filter
-        grid.attach(Gtk.Label(label="Keyboard:", halign=Gtk.Align.END), 0, row, 1, 1)
-        self._keyboard_combo = Gtk.ComboBoxText()
-        keyboards = _list_keyboards()
-        current_kb = cfg.get("keyboard_filter", "")
-        selected_idx = 0
-        for i, (path, name) in enumerate(keyboards):
-            self._keyboard_combo.append(name, f"{name}  ({path})")
-            if current_kb and (current_kb.lower() in name.lower()
-                               or name.lower() in current_kb.lower()):
-                selected_idx = i
-        self._keyboard_combo.set_active(selected_idx)
-        grid.attach(self._keyboard_combo, 1, row, 1, 1)
-        row += 1
-
         # Transcribe hotkey
         grid.attach(Gtk.Label(label="Transcribe hotkey:", halign=Gtk.Align.END), 0, row, 1, 1)
         self._hotkey_btn = HotkeyButton(cfg.get("hotkey", "KEY_SCROLLLOCK"))
@@ -266,10 +235,6 @@ class SettingsDialog(Gtk.Dialog):
 
     def apply(self):
         cfg = _config.load()
-
-        kb_id = self._keyboard_combo.get_active_id()
-        if kb_id:
-            cfg["keyboard_filter"] = kb_id
 
         cfg["hotkey"]         = self._hotkey_btn.key
         cfg["command_hotkey"] = self._cmd_hotkey_btn.key

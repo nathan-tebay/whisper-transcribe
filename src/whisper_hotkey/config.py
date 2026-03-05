@@ -11,7 +11,6 @@ DEFAULTS = {
     "language": "en",
     "hotkey": "KEY_SCROLLLOCK",
     "command_hotkey": "KEY_PAUSE",
-    "keyboard_filter": "Arduino",
     "min_duration": 0.5,
     "run_command_prefix": "command",
     "command_backend": "ollama",
