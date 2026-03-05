@@ -166,8 +166,7 @@ step_systemd_service() {
 
     info "Installing systemd user service for $TARGET_USER ..."
     mkdir -p "$service_dir"
-    chown "$TARGET_USER:$TARGET_USER" "$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config"
-    chown -R "$TARGET_USER:$TARGET_USER" "$service_dir"
+    chown -R "$TARGET_USER:$TARGET_USER" "$(getent passwd "$TARGET_USER" | cut -d: -f6)/.config"
 
     cat > "$service_file" <<EOF
 [Unit]
