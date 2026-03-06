@@ -74,16 +74,6 @@ class MultiDeviceWatcher:
     def _watch(self, path: str, dev, phys_key: str):
         logger.info("Watching %s (%s)", path, dev.name)
         try:
-            dev.grab()
-        except OSError as e:
-            logger.warning("Could not grab %s: %s", path, e)
-            dev.close()
-            with self._lock:
-                self._threads.pop(path, None)
-                self._seen_phys.discard(phys_key)
-            return
-
-        try:
             for event in dev.read_loop():
                 if self._stop.is_set():
                     break
@@ -102,7 +92,6 @@ class MultiDeviceWatcher:
                 logger.error("Device error on %s: %s", path, e)
         finally:
             try:
-                dev.ungrab()
                 dev.close()
             except OSError:
                 pass
