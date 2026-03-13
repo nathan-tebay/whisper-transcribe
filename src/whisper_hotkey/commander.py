@@ -162,6 +162,66 @@ def execute_command(response: str, cfg: dict) -> bool:
     return False
 
 
+_OPENAI_COMPAT_URLS = {
+    "openai":     "https://api.openai.com/v1/chat/completions",
+    "groq":       "https://api.groq.com/openai/v1/chat/completions",
+    "lmstudio":   "http://localhost:1234/v1/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+}
+
+_OPENAI_COMPAT_DEFAULT_MODELS = {
+    "openai":     "gpt-4o-mini",
+    "groq":       "llama-3.3-70b-versatile",
+    "lmstudio":   "local-model",
+    "openrouter": "openai/gpt-4o-mini",
+}
+
+_OPENAI_COMPAT_BACKENDS = set(_OPENAI_COMPAT_URLS)
+
+
+def ask_openai_compat(natural_language: str, cfg: dict, backend: str) -> str | None:
+    """Call any OpenAI-compatible /v1/chat/completions endpoint."""
+    url     = cfg.get("openai_compat_url") or _OPENAI_COMPAT_URLS.get(backend, "")
+    api_key = cfg.get("openai_compat_api_key", "")
+    model   = cfg.get("openai_compat_model") or _OPENAI_COMPAT_DEFAULT_MODELS.get(backend, "")
+    timeout = cfg.get("openai_compat_timeout", 30)
+
+    if not url:
+        logger.error("No URL configured for backend %r", backend)
+        return None
+
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": _build_prompt(natural_language)}],
+        "max_tokens": 100,
+    }).encode()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(url, data=payload, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        logger.error("%s request failed: %s", backend, e)
+        return None
+    except TimeoutError:
+        logger.error("%s timed out after %ds", backend, timeout)
+        return None
+
+    try:
+        response = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        logger.error("%s returned unexpected format: %s", backend, e)
+        return None
+
+    if not response:
+        logger.error("%s returned empty response", backend)
+        return None
+    return response.splitlines()[0].strip()
+
+
 def run_command(natural_language: str) -> bool:
     """Full pipeline: interpret with selected backend, then execute."""
     cfg     = _config.load()
@@ -169,6 +229,8 @@ def run_command(natural_language: str) -> bool:
 
     if backend == "claude":
         response = ask_claude(natural_language, cfg)
+    elif backend in _OPENAI_COMPAT_BACKENDS:
+        response = ask_openai_compat(natural_language, cfg, backend)
     else:
         response = ask_ollama(natural_language, cfg)
 

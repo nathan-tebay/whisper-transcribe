@@ -106,18 +106,21 @@ class AdvancedSettingsDialog(Gtk.Dialog):
     """Editor for less-frequently-changed config fields."""
 
     _FIELDS = [
-        ("whisper_binary",     "Whisper binary:"),
-        ("model_path",         "Model path:"),
-        ("audio_path",         "Audio temp file:"),
-        ("language",           "Language:"),
-        ("run_command_prefix", "Command prefix:"),
-        ("terminal_command",   "Terminal command:"),
-        ("ollama_url",         "Ollama URL:"),
+        ("whisper_binary",        "Whisper binary:"),
+        ("model_path",            "Model path:"),
+        ("audio_path",            "Audio temp file:"),
+        ("language",              "Language:"),
+        ("run_command_prefix",    "Command prefix:"),
+        ("terminal_command",      "Terminal command:"),
+        ("ollama_url",            "Ollama URL:"),
+        ("openai_compat_url",     "OpenAI-compat URL:"),
+        ("openai_compat_api_key", "OpenAI-compat API key:"),
     ]
     _NUMERIC = [
-        ("min_duration",   "Min duration (s):",   0.1, 10.0, 0.1, 1),
-        ("ollama_timeout", "Ollama timeout (s):",  5,  300,  1,   0),
-        ("claude_timeout", "Claude timeout (s):",  5,  300,  1,   0),
+        ("min_duration",          "Min duration (s):",         0.1, 10.0, 0.1, 1),
+        ("ollama_timeout",        "Ollama timeout (s):",        5,  300,  1,   0),
+        ("claude_timeout",        "Claude timeout (s):",        5,  300,  1,   0),
+        ("openai_compat_timeout", "OpenAI-compat timeout (s):", 5,  300,  1,   0),
     ]
 
     def __init__(self, parent, cfg: dict):
@@ -190,16 +193,16 @@ class SettingsDialog(Gtk.Dialog):
         # Command backend
         grid.attach(Gtk.Label(label="Command backend:", halign=Gtk.Align.END), 0, row, 1, 1)
         self._backend_combo = Gtk.ComboBoxText()
-        for b in ["ollama", "claude"]:
+        for b in ["ollama", "claude", "openai", "groq", "lmstudio", "openrouter"]:
             self._backend_combo.append(b, b)
         self._backend_combo.set_active_id(cfg.get("command_backend", "ollama"))
         self._backend_combo.connect("changed", self._on_backend_changed)
         grid.attach(self._backend_combo, 1, row, 1, 1)
         row += 1
 
-        # Ollama model dropdown
-        self._model_label = Gtk.Label(label="Ollama model:", halign=Gtk.Align.END)
-        grid.attach(self._model_label, 0, row, 1, 1)
+        # Ollama model dropdown (shown only for ollama backend)
+        self._ollama_model_label = Gtk.Label(label="Ollama model:", halign=Gtk.Align.END)
+        grid.attach(self._ollama_model_label, 0, row, 1, 1)
         self._model_combo = Gtk.ComboBoxText.new_with_entry()
         current_model = cfg.get("ollama_model", "")
         models = _get_ollama_models(cfg.get("ollama_url", _config.DEFAULTS["ollama_url"]))
@@ -212,6 +215,16 @@ class SettingsDialog(Gtk.Dialog):
         grid.attach(self._model_combo, 1, row, 1, 1)
         row += 1
 
+        # OpenAI-compat model entry (shown for openai/groq/lmstudio/openrouter)
+        self._oai_model_label = Gtk.Label(label="Model:", halign=Gtk.Align.END)
+        grid.attach(self._oai_model_label, 0, row, 1, 1)
+        self._oai_model_entry = Gtk.Entry(
+            text=cfg.get("openai_compat_model", ""), hexpand=True,
+            placeholder_text="e.g. gpt-4o-mini, llama-3.3-70b-versatile",
+        )
+        grid.attach(self._oai_model_entry, 1, row, 1, 1)
+        row += 1
+
         # Advanced settings button
         adv_btn = Gtk.Button(label="Advanced settings…")
         adv_btn.connect("clicked", self._on_advanced)
@@ -220,10 +233,16 @@ class SettingsDialog(Gtk.Dialog):
         self._on_backend_changed(self._backend_combo)
         self.show_all()
 
+    _OAI_COMPAT_BACKENDS = {"openai", "groq", "lmstudio", "openrouter"}
+
     def _on_backend_changed(self, combo):
-        visible = combo.get_active_id() == "ollama"
-        self._model_label.set_visible(visible)
-        self._model_combo.set_visible(visible)
+        backend = combo.get_active_id()
+        is_ollama = backend == "ollama"
+        is_oai    = backend in self._OAI_COMPAT_BACKENDS
+        self._ollama_model_label.set_visible(is_ollama)
+        self._model_combo.set_visible(is_ollama)
+        self._oai_model_label.set_visible(is_oai)
+        self._oai_model_entry.set_visible(is_oai)
 
     def _on_advanced(self, _):
         cfg = _config.load()
@@ -245,6 +264,8 @@ class SettingsDialog(Gtk.Dialog):
             model = self._model_combo.get_child().get_text().strip()
             if model:
                 cfg["ollama_model"] = model
+        elif backend in self._OAI_COMPAT_BACKENDS:
+            cfg["openai_compat_model"] = self._oai_model_entry.get_text().strip()
 
         _config.save(cfg)
         _systemctl("restart", SERVICE)

@@ -18,6 +18,10 @@ DEFAULTS = {
     "ollama_url": "http://localhost:11434/api/generate",
     "ollama_timeout": 30,
     "claude_timeout": 30,
+    "openai_compat_url": "",
+    "openai_compat_api_key": "",
+    "openai_compat_model": "",
+    "openai_compat_timeout": 30,
     "terminal_command": "konsole --new-tab -e bash -c",
 }
 
