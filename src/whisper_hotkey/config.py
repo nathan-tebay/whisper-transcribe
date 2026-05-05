@@ -23,6 +23,8 @@ DEFAULTS = {
     "openai_compat_model": "",
     "openai_compat_timeout": 30,
     "terminal_command": "konsole --new-tab -e bash -c",
+    "whisper_gpu": True,
+    "device_name": "",
 }
 
 

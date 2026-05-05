@@ -193,7 +193,7 @@ def ask_openai_compat(natural_language: str, cfg: dict, backend: str) -> str | N
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": _build_prompt(natural_language)}],
-        "max_tokens": 100,
+        "max_tokens": 10000,
     }).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:

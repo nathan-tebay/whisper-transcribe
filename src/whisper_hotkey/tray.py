@@ -115,6 +115,7 @@ class AdvancedSettingsDialog(Gtk.Dialog):
         ("ollama_url",            "Ollama URL:"),
         ("openai_compat_url",     "OpenAI-compat URL:"),
         ("openai_compat_api_key", "OpenAI-compat API key:"),
+        ("device_name",           "Input device name:"),
     ]
     _NUMERIC = [
         ("min_duration",          "Min duration (s):",         0.1, 10.0, 0.1, 1),
@@ -151,6 +152,13 @@ class AdvancedSettingsDialog(Gtk.Dialog):
             grid.attach(spin, 1, row, 1, 1)
             self._spins[key] = spin
 
+        # GPU checkbox
+        row = len(self._FIELDS) + len(self._NUMERIC)
+        grid.attach(Gtk.Label(label="Whisper GPU:", halign=Gtk.Align.END), 0, row, 1, 1)
+        self._gpu_check = Gtk.CheckButton(label="Use GPU (Vulkan) for transcription")
+        self._gpu_check.set_active(cfg.get("whisper_gpu", True))
+        grid.attach(self._gpu_check, 1, row, 1, 1)
+
         self.show_all()
 
     def apply(self, cfg: dict):
@@ -159,6 +167,7 @@ class AdvancedSettingsDialog(Gtk.Dialog):
         for key, _label, _lo, _hi, _step, digits in self._NUMERIC:
             spin = self._spins[key]
             cfg[key] = spin.get_value() if digits > 0 else int(spin.get_value())
+        cfg["whisper_gpu"] = self._gpu_check.get_active()
 
 
 # ── Settings dialog ───────────────────────────────────────────────────────────
@@ -230,8 +239,8 @@ class SettingsDialog(Gtk.Dialog):
         adv_btn.connect("clicked", self._on_advanced)
         grid.attach(adv_btn, 1, row, 1, 1)
 
-        self._on_backend_changed(self._backend_combo)
         self.show_all()
+        self._on_backend_changed(self._backend_combo)
 
     _OAI_COMPAT_BACKENDS = {"openai", "groq", "lmstudio", "openrouter"}
 

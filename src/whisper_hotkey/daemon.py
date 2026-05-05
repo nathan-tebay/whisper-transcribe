@@ -123,7 +123,7 @@ def main():
     cmd_hotkey = getattr(evdev.ecodes, cfg["command_hotkey"])
     recorder    = AudioRecorder(output_path=cfg["audio_path"])
     transcriber = Transcriber(binary=cfg["whisper_binary"], model=cfg["model_path"],
-                              language=cfg["language"])
+                              language=cfg["language"], gpu=cfg["whisper_gpu"])
     min_duration       = cfg["min_duration"]
     run_command_prefix = cfg["run_command_prefix"]
 
@@ -199,6 +199,7 @@ def main():
             hotkey:     (on_press, on_release),
             cmd_hotkey: (on_press, on_cmd_release),
         },
+        device_name=cfg["device_name"],
     )
 
     def _cleanup(signum, frame):

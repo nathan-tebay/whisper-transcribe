@@ -38,10 +38,12 @@ class MultiDeviceWatcher:
     """
 
     def __init__(self, keycodes: list[int], callbacks: dict[int, tuple],
-                 name_filter: str = "keyboard", poll_interval: float = 2.0):
+                 name_filter: str = "keyboard", poll_interval: float = 2.0,
+                 device_name: str = ""):
         self._keycodes       = set(keycodes)
         self.callbacks       = callbacks
         self._name_filter    = name_filter.lower()
+        self._device_name    = device_name.lower()
         self._poll_interval  = poll_interval
         self._threads: dict[str, threading.Thread] = {}  # path  -> thread
         self._seen_phys: set[str] = set()               # phys keys in use
@@ -60,7 +62,12 @@ class MultiDeviceWatcher:
         """Open path if it qualifies; return open InputDevice or None."""
         try:
             dev = evdev.InputDevice(path)
-            if self._name_filter not in dev.name.lower():
+            name_lower = dev.name.lower()
+            if self._device_name:
+                if self._device_name not in name_lower:
+                    dev.close()
+                    return None
+            elif self._name_filter not in name_lower:
                 dev.close()
                 return None
             keys = dev.capabilities().get(ecodes.EV_KEY, [])
