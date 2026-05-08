@@ -175,6 +175,8 @@ Requires the `claude` CLI to be installed and accessible in PATH.
 | `model_path` | `/usr/local/share/whisper/models/ggml-large-v3.bin` | Path to GGML model |
 | `audio_path` | `/tmp/whisper-in.wav` | Temporary audio file (cleaned up automatically) |
 | `terminal_command` | `konsole --new-tab -e bash -c` | Terminal emulator command (for TERMINAL: responses) |
+| `whisper_gpu` | `true` | Enable GPU acceleration for whisper inference; set to `false` to force CPU |
+| `device_name` | `""` | Substring filter to pin hotkey detection to a specific keyboard (e.g. `"logitech"`); empty = all keyboards |
 
 ## System Tray Icon
 
